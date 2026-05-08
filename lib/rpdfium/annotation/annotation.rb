@@ -1,0 +1,103 @@
+# frozen_string_literal: true
+
+module Rpdfium
+  # Wrapper per FPDF_ANNOTATION. Le annotazioni includono link, highlight,
+  # commenti, widget di form. PDFium richiede di chiudere ogni handle con
+  # FPDFPage_CloseAnnot, gestito qui via finalizer.
+  class Annotation
+    SUBTYPES = {
+      Raw::FPDF_ANNOT_UNKNOWN => :unknown,
+      Raw::FPDF_ANNOT_TEXT => :text,
+      Raw::FPDF_ANNOT_LINK => :link,
+      Raw::FPDF_ANNOT_FREETEXT => :free_text,
+      Raw::FPDF_ANNOT_LINE => :line,
+      Raw::FPDF_ANNOT_SQUARE => :square,
+      Raw::FPDF_ANNOT_CIRCLE => :circle,
+      Raw::FPDF_ANNOT_HIGHLIGHT => :highlight,
+      Raw::FPDF_ANNOT_UNDERLINE => :underline,
+      Raw::FPDF_ANNOT_SQUIGGLY => :squiggly,
+      Raw::FPDF_ANNOT_STRIKEOUT => :strikeout,
+      Raw::FPDF_ANNOT_STAMP => :stamp,
+      Raw::FPDF_ANNOT_INK => :ink,
+      Raw::FPDF_ANNOT_POPUP => :popup,
+      Raw::FPDF_ANNOT_FILEATTACHMENT => :file_attachment,
+      Raw::FPDF_ANNOT_WIDGET => :widget,
+      Raw::FPDF_ANNOT_REDACT => :redact
+    }.freeze
+
+    attr_reader :page, :index, :handle
+
+    def initialize(page, index)
+      @page   = page
+      @index  = index
+      @handle = Raw.FPDFPage_GetAnnot(page.handle, index)
+      raise Error, "Could not load annotation #{index}" if @handle.null?
+
+      @closed = false
+      ObjectSpace.define_finalizer(self, self.class.finalizer(@handle))
+    end
+
+    def self.finalizer(handle)
+      proc { Raw.FPDFPage_CloseAnnot(handle) unless handle.null? }
+    end
+
+    def subtype
+      SUBTYPES[Raw.FPDFAnnot_GetSubtype(@handle)] || :unknown
+    end
+
+    def bbox
+      rect = Raw::FS_RECTF.new
+      return nil if Raw.FPDFAnnot_GetRect(@handle, rect) == 0
+
+      h = @page.height
+      { x0: rect[:left], x1: rect[:right],
+        top: h - rect[:top], bottom: h - rect[:bottom] }
+    end
+
+    # Valore di una chiave del dict di annotazione (UTF-16LE).
+    # Chiavi comuni: "Contents" (testo annotazione), "T" (autore),
+    # "M" (mod date), "NM" (uniq name).
+    def [](key)
+      Raw.read_utf16_string(:FPDFAnnot_GetStringValue, @handle, key.to_s)
+    end
+
+    def has_key?(key)
+      Raw.FPDFAnnot_HasKey(@handle, key.to_s) == 1
+    end
+
+    # Per annotazioni :link → URL di destinazione (se esterno) o nil.
+    def link_uri
+      return nil unless subtype == :link
+
+      link_handle = Raw.FPDFAnnot_GetLink(@handle)
+      return nil if link_handle.null?
+
+      action = Raw.FPDFLink_GetAction(link_handle)
+      return nil if action.null?
+
+      Raw.read_utf16_string(:FPDFAction_GetURIPath, @page.document.handle, action)
+    end
+
+    # Per link interni → indice pagina di destinazione, o nil.
+    def link_dest_page
+      return nil unless subtype == :link
+
+      link_handle = Raw.FPDFAnnot_GetLink(@handle)
+      return nil if link_handle.null?
+
+      dest = Raw.FPDFLink_GetDest(@page.document.handle, link_handle)
+      return nil if dest.null?
+
+      idx = Raw.FPDFDest_GetDestPageIndex(@page.document.handle, dest)
+      idx >= 0 ? idx : nil
+    end
+
+    def close
+      return if @closed
+
+      Raw.FPDFPage_CloseAnnot(@handle) unless @handle.null?
+      @handle = FFI::Pointer::NULL
+      @closed = true
+    end
+  end
+end
