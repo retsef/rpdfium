@@ -10,9 +10,9 @@ require_relative "rpdfium/structure/outline"
 require_relative "rpdfium/structure/attachment"
 
 require_relative "rpdfium/image/embedded"
-require_relative "rpdfium/annotation/annotation"
-require_relative "rpdfium/form/form"
-require_relative "rpdfium/search/search"
+require_relative "rpdfium/annotation"
+require_relative "rpdfium/form"
+require_relative "rpdfium/search"
 
 require_relative "rpdfium/document"
 require_relative "rpdfium/page"
