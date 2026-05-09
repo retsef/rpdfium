@@ -3,6 +3,39 @@
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [0.2.1] - allineamento PDFium chromium/6611+
+
+### Cambiato
+
+- **`FPDFText_GetTextRenderMode(text_page, char_index)` rimossa dalle
+  bindings.** Era stata rimossa upstream da PDFium in chromium/6611
+  (luglio 2024) — chiamarla causa `undefined symbol` con i build recenti
+  di pdfium-binaries. Riferimenti:
+  [pypdfium2#335](https://github.com/pypdfium2-team/pypdfium2/issues/335),
+  [pdfium-render#151](https://github.com/ajrcarey/pdfium-render/issues/151).
+- `Page#chars` ora ottiene `:render_mode` via il path nuovo: prima
+  risolve il text object che contiene il char con
+  `FPDFText_GetTextObject`, poi legge il render mode con
+  `FPDFTextObj_GetTextRenderMode` (che era già presente nella binding
+  ma non utilizzato a char-level). Una cache interna evita lookup
+  ripetuti — overhead invariato anche su pagine con migliaia di char.
+- Su build PDFium antichi (< chromium/6611) che non espongono
+  `FPDFText_GetTextObject`, `:render_mode` ricade a `nil` invece di
+  far esplodere l'estrazione.
+
+### Aggiunto
+
+- Binding di **`FPDFText_GetTextObject(text_page, char_index)`** —
+  rimpiazzo upstream per ottenere il text object di un char.
+- Binding di **`FPDFFont_GetBaseFontName(font, buffer, size)`** —
+  ritorna il `BaseFont` entry dal dict del font (può includere prefissi
+  di subset come `ABCDEF+Helvetica`). Firma `c_size_t` invece di
+  `c_ulong`, secondo l'header pubblico aggiornato.
+- Binding di **`FPDFFont_GetFamilyName(font, buffer, size)`** — ritorna
+  il nome famiglia "pulito".
+- `FPDFFont_GetFontName` mantenuta come fallback per compatibilità con
+  build PDFium più vecchi.
+
 ## [0.2.0] - parità con pypdfium2
 
 Espansione massiccia. La superficie di API copre ora i casi d'uso principali

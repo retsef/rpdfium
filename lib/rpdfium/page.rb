@@ -106,7 +106,11 @@ module Rpdfium
     #   :fontsize taglia in punti
     #   :font     nome font (se disponibile)
     #   :weight   spessore (es. 400=regular, 700=bold)
-    #   :render_mode  modalità rendering (fill/stroke/invisible)
+    #   :render_mode  modalità rendering (fill/stroke/invisible). Letto via
+    #                 il text object che contiene il char (PDFium non
+    #                 espone più una API char-level dopo chromium/6611).
+    #                 nil su build PDFium antichi che non supportano il
+    #                 lookup char→object.
     #   :generated  true se inserito da PDFium (es. spazi sintetici)
     #   :hyphen   true se trattino di sillabazione
     #   :unicode_error  true se PDFium non ha potuto mapparlo
@@ -130,6 +134,20 @@ module Rpdfium
       font_buf = FFI::MemoryPointer.new(:uchar, 256)
       flags_buf = FFI::MemoryPointer.new(:int)
 
+      # Cache: il render mode è una proprietà del TEXT OBJECT, non del char.
+      # Tutti i char dello stesso text object hanno lo stesso render mode.
+      # Convertiamo il pointer FFI in una chiave Integer (`address`) perché
+      # FFI::Pointer non è una chiave Hash stabile (#hash differisce tra
+      # istanze anche se address uguale).
+      render_mode_cache = {}
+      get_render_mode = lambda do |char_index|
+        text_obj = Raw.FPDFText_GetTextObject(tp.handle, char_index)
+        return -1 if text_obj.null?
+
+        addr = text_obj.address
+        render_mode_cache[addr] ||= Raw.FPDFTextObj_GetTextRenderMode(text_obj)
+      end
+
       n.times do |i|
         if loose
           if Raw.FPDFText_GetLooseCharBox(tp.handle, i, rect) == 1
@@ -144,12 +162,28 @@ module Rpdfium
           y_top = t.read_double; y_bot = b.read_double
         end
         Raw.FPDFText_GetCharOrigin(tp.handle, i, ox, oy)
-        # Font name (best-effort)
+        # Font name (best-effort): GetFontInfo è disponibile su tutte le
+        # versioni di PDFium ed è il path più portabile a char-level.
         n_bytes = Raw.FPDFText_GetFontInfo(tp.handle, i, font_buf, 256, flags_buf)
         font_name = if n_bytes > 1
                       font_buf.read_bytes(n_bytes - 1).force_encoding("UTF-8")
                     end
         cp = Raw.FPDFText_GetUnicode(tp.handle, i)
+
+        # render_mode via il path nuovo. Su PDFium che non espone più
+        # FPDFText_GetTextRenderMode (chromium/6611+), questa è l'UNICA
+        # strada. La cache rende l'overhead marginale anche con migliaia
+        # di char (un solo Get/Lookup per text object).
+        rm = begin
+          get_render_mode.call(i)
+        rescue Rpdfium::LoadError
+          # FPDFText_GetTextObject non disponibile in build PDFium
+          # antichi (< chromium/6611). In quel caso lasciamo nil:
+          # gli utenti su build vecchi non hanno comunque mai avuto
+          # render_mode affidabile per via di altri bug upstream.
+          nil
+        end
+
         result[i] = {
           char:     safe_codepoint(cp),
           codepoint: cp,
@@ -163,7 +197,7 @@ module Rpdfium
           fontsize: Raw.FPDFText_GetFontSize(tp.handle, i),
           font:     font_name,
           weight:   Raw.FPDFText_GetFontWeight(tp.handle, i),
-          render_mode:   Raw.FPDFText_GetTextRenderMode(tp.handle, i),
+          render_mode:   rm,
           generated:     Raw.FPDFText_IsGenerated(tp.handle, i) == 1,
           hyphen:        Raw.FPDFText_IsHyphen(tp.handle, i) == 1,
           unicode_error: Raw.FPDFText_HasUnicodeMapError(tp.handle, i) == 1

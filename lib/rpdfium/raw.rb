@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "ffi"
-require "rpdfium/binary"
 
 module Rpdfium
   # Layer 1: bindings FFI grezzi alle API C di PDFium.
@@ -321,8 +320,14 @@ module Rpdfium
     attach_function :FPDFText_GetFontWeight, %i[FPDF_TEXTPAGE int], :int
     attach_function :FPDFText_GetFontInfo,
                     %i[FPDF_TEXTPAGE int pointer ulong pointer], :ulong
-    attach_function :FPDFText_GetTextRenderMode,
-                    %i[FPDF_TEXTPAGE int], :int
+    # NOTE: FPDFText_GetTextRenderMode(text_page, char_index) è stato RIMOSSO
+    # da PDFium in chromium/6611 (luglio 2024). Il rimpiazzo è in due passi:
+    #   1. FPDFText_GetTextObject(text_page, char_index) → FPDF_PAGEOBJECT
+    #   2. FPDFTextObj_GetTextRenderMode(page_object)    → int
+    # Wrapper di alto livello: vedi Page#chars (campo :render_mode).
+    # Riferimento: pypdfium2 issue #335, pdfium-render issue #151.
+    attach_function :FPDFText_GetTextObject,
+                    %i[FPDF_TEXTPAGE int], :FPDF_PAGEOBJECT
     attach_function :FPDFText_GetCharBox,
                     %i[FPDF_TEXTPAGE int pointer pointer pointer pointer],
                     :FPDF_BOOL
@@ -446,7 +451,26 @@ module Rpdfium
     attach_function :FPDFTextObj_GetText,
                     %i[FPDF_PAGEOBJECT FPDF_TEXTPAGE pointer ulong], :ulong
     attach_function :FPDFTextObj_GetFont, %i[FPDF_PAGEOBJECT], :FPDF_FONT
+    # FPDFTextObj_GetTextRenderMode è il rimpiazzo dell'ex
+    # FPDFText_GetTextRenderMode (rimossa upstream in chromium/6611).
+    # Prende un text PAGEOBJECT, non (textpage, char_index).
     attach_function :FPDFTextObj_GetTextRenderMode, %i[FPDF_PAGEOBJECT], :int
+    # NOTE: FPDFFont_GetFontName è marcata come legacy in PDFium recenti.
+    # Il modello nuovo prevede due API distinte:
+    #   - FPDFFont_GetBaseFontName  → BaseFont entry del PDF dict (può
+    #                                 includere prefissi di subset come
+    #                                 "ABCDEF+Helvetica")
+    #   - FPDFFont_GetFamilyName    → nome famiglia "pulito" (es. "Helvetica")
+    # Queste API usano `c_size_t` per lunghezza/return type invece di
+    # `c_ulong`. Su build di PDFium <= chromium/6533 non sono presenti:
+    # in tal caso lo stub `attach_function` (in raw.rb) assicura che la
+    # chiamata fallisca con LoadError chiaro al call site, non al require.
+    attach_function :FPDFFont_GetBaseFontName,
+                    %i[FPDF_FONT pointer size_t], :size_t
+    attach_function :FPDFFont_GetFamilyName,
+                    %i[FPDF_FONT pointer size_t], :size_t
+    # Mantenuta per compatibilità con build PDFium più vecchi. Su build
+    # nuovi può non essere presente: stesso meccanismo di stub.
     attach_function :FPDFFont_GetFontName,
                     %i[FPDF_FONT pointer ulong], :ulong
     attach_function :FPDFFont_GetFlags,    %i[FPDF_FONT pointer], :FPDF_BOOL
