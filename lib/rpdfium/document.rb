@@ -31,22 +31,49 @@ module Rpdfium
       Rpdfium.init!
       @password = password
       @source   = input
-      @handle, @retain_buffer = load_handle(input, password)
-      if @handle.null?
+      handle, retain_buffer = load_handle(input, password)
+      if handle.null?
         code = Rpdfium.last_error_code
         msg  = Rpdfium.last_error_message
         raise PasswordError, msg if code == 4
 
         raise LoadError, "Failed to load PDF: #{msg}"
       end
-      @closed = false
+
+      # Stato condiviso tra istanza e finalizer. Lo wrappiamo in un Hash
+      # così la closure del finalizer e il metodo close vedono lo stesso
+      # mutable state — il finalizer non chiude un handle già chiuso.
+      @state = {
+        handle:        handle,
+        retain_buffer: retain_buffer,
+        closed:        false
+      }
       @form_env = nil
       @page_cache = {}
-      ObjectSpace.define_finalizer(self, self.class.finalizer(@handle))
+
+      # ATTENZIONE: il finalizer NON deve chiudere altri Ruby objects
+      # (es. pages cached o form_env), perché potrebbero essere già stati
+      # finalizzati dal GC in ordine non deterministico. Il finalizer è
+      # un best-effort di ultima istanza: chiude SOLO l'handle nativo,
+      # e SOLO se il close esplicito non è già stato chiamato.
+      ObjectSpace.define_finalizer(self, self.class.finalizer(@state))
     end
 
-    def self.finalizer(handle)
-      proc { Raw.FPDF_CloseDocument(handle) unless handle.null? }
+    # IMPORTANTE: questa proc deve essere un *class method* o un
+    # `lambda` definito FUORI dall'instance scope. Se la chiusura cattura
+    # `self`, il GC non potrà MAI raccogliere il Document — definirebbe
+    # un riferimento permanente.
+    def self.finalizer(state)
+      proc do
+        next if state[:closed]
+        next if state[:handle].null?
+
+        Raw.FPDF_CloseDocument(state[:handle])
+        state[:closed] = true
+        # retain_buffer va tenuto vivo finché PDFium tiene il Document.
+        # Una volta chiuso, può essere rilasciato (ma è già nella state hash,
+        # quindi viene comunque liberato quando il finalizer esce).
+      end
     end
 
     # ===== Pages =====
