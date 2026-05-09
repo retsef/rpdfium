@@ -13,12 +13,39 @@ module Rpdfium
 
     def self.candidate_paths
       paths = []
-      paths << ENV["PDFIUM_LIBRARY_PATH"] if ENV["PDFIUM_LIBRARY_PATH"]
-      if defined?(Rpdfium::Binary) && Rpdfium::Binary.respond_to?(:library_path)
-        paths << Rpdfium::Binary.library_path
+
+      # 1. ENV ha priorità assoluta. Se l'utente l'ha settata, è un override
+      #    esplicito: niente euristica, niente fallback.
+      if (env = ENV["PDFIUM_LIBRARY_PATH"]) && !env.empty?
+        return [env]
       end
-      paths.concat(%w[pdfium libpdfium libpdfium.so libpdfium.dylib pdfium.dll])
-      paths.compact
+
+      # 2. Gemma rpdfium-binary, se installata.
+      if defined?(Rpdfium::Binary) && Rpdfium::Binary.respond_to?(:library_path)
+        begin
+          bp = Rpdfium::Binary.library_path
+          return [bp] if bp && !bp.empty?
+        rescue StandardError
+          # Se il locator esplode (es. download fallito), passa al fallback.
+        end
+      end
+
+      # 3. Fallback: nomi di sistema, FILTRATI per OS host.
+      #    Mischiare libpdfium.so + libpdfium.dylib confonde FFI: su macOS
+      #    cerca di appendere ".dylib" a "libpdfium.so" → "libpdfium.so.dylib".
+      paths.concat(system_library_names)
+      paths
+    end
+
+    def self.system_library_names
+      case RbConfig::CONFIG["host_os"]
+      when /darwin/
+        %w[libpdfium.dylib pdfium]
+      when /mingw|mswin|cygwin/
+        %w[pdfium.dll pdfium]
+      else  # Linux, BSD, *nix in genere
+        %w[libpdfium.so pdfium]
+      end
     end
 
     @native_loaded = false
