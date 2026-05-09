@@ -203,14 +203,21 @@ module Rpdfium
       end
 
       def extract_cell_text(cell)
-        # Margine interno per evitare di catturare testo della cella adiacente
-        pad = 0.5
-        @page.text_in_bbox(
-          left: cell[:x0] + pad,
-          right: cell[:x1] - pad,
-          top: cell[:top] + pad,
-          bottom: cell[:bottom] - pad
-        ).strip
+        # Niente padding: PDFium include i char il cui CENTRO cade dentro
+        # la bbox, quindi un char esattamente sul bordo non viene tagliato.
+        # Il padding di 0.5 era un over-engineering: causava taglio di
+        # glifi che toccavano il bordo della cella e PDFium reinseriva
+        # spazi sintetici per coprire i "buchi" risultanti.
+        raw = @page.text_in_bbox(
+          left:   cell[:x0],
+          right:  cell[:x1],
+          top:    cell[:top],
+          bottom: cell[:bottom]
+        )
+        # Normalizza whitespace interno: PDFium può inserire \r, \n, o
+        # multiple spazi tra char di una stessa parola se il layout è
+        # complesso (multi-line cell).
+        raw.gsub(/\s+/, " ").strip
       end
     end
   end
