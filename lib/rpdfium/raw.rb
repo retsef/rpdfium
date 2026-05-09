@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "ffi"
+require "rpdfium/binary"
 
 module Rpdfium
   # Layer 1: bindings FFI grezzi alle API C di PDFium.
