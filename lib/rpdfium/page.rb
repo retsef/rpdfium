@@ -12,7 +12,7 @@ module Rpdfium
       @document = document
       @index    = index
       @handle   = Raw.FPDF_LoadPage(document.handle, index)
-      raise PageError, "Could not load page #{index}" if @handle.nil?
+      raise PageError, "Could not load page #{index}" if @handle.null?
 
       @text_page = nil
       @closed = false
@@ -20,7 +20,7 @@ module Rpdfium
     end
 
     def self.finalizer(handle)
-      proc { Raw.FPDF_ClosePage(handle) unless handle.nil? }
+      proc { Raw.FPDF_ClosePage(handle) unless handle.null? }
     end
 
     # ===== Geometria =====
@@ -142,7 +142,7 @@ module Rpdfium
       render_mode_cache = {}
       get_render_mode = lambda do |char_index|
         text_obj = Raw.FPDFText_GetTextObject(tp.handle, char_index)
-        return -1 if text_obj.nil?
+        return -1 if text_obj.null?
 
         addr = text_obj.address
         render_mode_cache[addr] ||= Raw.FPDFTextObj_GetTextRenderMode(text_obj)
@@ -257,7 +257,7 @@ module Rpdfium
 
       n.times do |i|
         obj = Raw.FPDFPage_GetObject(@handle, i)
-        next if obj.nil?
+        next if obj.null?
         next unless Raw.FPDFPageObj_GetType(obj) == Raw::PAGEOBJ_PATH
 
         stroke_width = read_stroke_width(obj)
@@ -268,7 +268,7 @@ module Rpdfium
 
         seg_count.times do |si|
           seg = Raw.FPDFPath_GetPathSegment(obj, si)
-          next if seg.nil?
+          next if seg.null?
 
           x_buf = FFI::MemoryPointer.new(:float)
           y_buf = FFI::MemoryPointer.new(:float)
@@ -344,7 +344,7 @@ module Rpdfium
 
       n.times do |i|
         obj = Raw.FPDFPage_GetObject(@handle, i)
-        next if obj.nil?
+        next if obj.null?
         next unless Raw.FPDFPageObj_GetType(obj) == Raw::PAGEOBJ_PATH
         next unless Raw.FPDFPageObj_GetBounds(obj, l, r, b, t) == 1
 
@@ -361,7 +361,7 @@ module Rpdfium
       out = []
       n.times do |i|
         obj = Raw.FPDFPage_GetObject(@handle, i)
-        next if obj.nil?
+        next if obj.null?
         next unless Raw.FPDFPageObj_GetType(obj) == Raw::PAGEOBJ_IMAGE
 
         out << Image::Embedded.new(self, obj)
@@ -405,7 +405,7 @@ module Rpdfium
       format = output == :gray ? Raw::FPDFBitmap_Gray : Raw::FPDFBitmap_BGRA
 
       bitmap = Raw.FPDFBitmap_CreateEx(w, h, format, FFI::Pointer::NULL, 0)
-      raise Error, "Bitmap allocation failed" if bitmap.nil?
+      raise Error, "Bitmap allocation failed" if bitmap.null?
 
       begin
         Raw.FPDFBitmap_FillRect(bitmap, 0, 0, w, h, background)
@@ -449,7 +449,7 @@ module Rpdfium
       return if @closed
 
       @text_page&.close
-      Raw.FPDF_ClosePage(@handle) unless @handle.nil?
+      Raw.FPDF_ClosePage(@handle) unless @handle.null?
       @handle = FFI::Pointer::NULL
       @closed = true
     end
@@ -526,14 +526,14 @@ module Rpdfium
 
     def initialize(page)
       @handle = Raw.FPDFText_LoadPage(page.handle)
-      raise PageError, "Could not load text page" if @handle.nil?
+      raise PageError, "Could not load text page" if @handle.null?
 
       @closed = false
       ObjectSpace.define_finalizer(self, self.class.finalizer(@handle))
     end
 
     def self.finalizer(handle)
-      proc { Raw.FPDFText_ClosePage(handle) unless handle.nil? }
+      proc { Raw.FPDFText_ClosePage(handle) unless handle.null? }
     end
 
     def char_count
@@ -543,7 +543,7 @@ module Rpdfium
     def close
       return if @closed
 
-      Raw.FPDFText_ClosePage(@handle) unless @handle.nil?
+      Raw.FPDFText_ClosePage(@handle) unless @handle.null?
       @handle = FFI::Pointer::NULL
       @closed = true
     end

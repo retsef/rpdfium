@@ -9,7 +9,7 @@ module Rpdfium
       @document = document
       @index    = index
       @handle   = Raw.FPDFDoc_GetAttachment(document.handle, index)
-      raise Error, "Attachment #{index} not found" if @handle.nil?
+      raise Error, "Attachment #{index} not found" if @handle.null?
     end
 
     def name

@@ -31,14 +31,14 @@ module Rpdfium
       @page   = page
       @index  = index
       @handle = Raw.FPDFPage_GetAnnot(page.handle, index)
-      raise Error, "Could not load annotation #{index}" if @handle.nil?
+      raise Error, "Could not load annotation #{index}" if @handle.null?
 
       @closed = false
       ObjectSpace.define_finalizer(self, self.class.finalizer(@handle))
     end
 
     def self.finalizer(handle)
-      proc { Raw.FPDFPage_CloseAnnot(handle) unless handle.nil? }
+      proc { Raw.FPDFPage_CloseAnnot(handle) unless handle.null? }
     end
 
     def subtype
@@ -70,10 +70,10 @@ module Rpdfium
       return nil unless subtype == :link
 
       link_handle = Raw.FPDFAnnot_GetLink(@handle)
-      return nil if link_handle.nil?
+      return nil if link_handle.null?
 
       action = Raw.FPDFLink_GetAction(link_handle)
-      return nil if action.nil?
+      return nil if action.null?
 
       Raw.read_utf16_string(:FPDFAction_GetURIPath, @page.document.handle, action)
     end
@@ -83,10 +83,10 @@ module Rpdfium
       return nil unless subtype == :link
 
       link_handle = Raw.FPDFAnnot_GetLink(@handle)
-      return nil if link_handle.nil?
+      return nil if link_handle.null?
 
       dest = Raw.FPDFLink_GetDest(@page.document.handle, link_handle)
-      return nil if dest.nil?
+      return nil if dest.null?
 
       idx = Raw.FPDFDest_GetDestPageIndex(@page.document.handle, dest)
       idx >= 0 ? idx : nil
@@ -95,7 +95,7 @@ module Rpdfium
     def close
       return if @closed
 
-      Raw.FPDFPage_CloseAnnot(@handle) unless @handle.nil?
+      Raw.FPDFPage_CloseAnnot(@handle) unless @handle.null?
       @handle = FFI::Pointer::NULL
       @closed = true
     end

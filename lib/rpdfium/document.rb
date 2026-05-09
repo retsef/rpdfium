@@ -32,7 +32,7 @@ module Rpdfium
       @password = password
       @source   = input
       handle, retain_buffer = load_handle(input, password)
-      if handle.nil?
+      if handle.null?
         code = Rpdfium.last_error_code
         msg  = Rpdfium.last_error_message
         raise PasswordError, msg if code == 4
@@ -66,7 +66,7 @@ module Rpdfium
     def self.finalizer(state)
       proc do
         next if state[:closed]
-        next if state[:handle].nil?
+        next if state[:handle].null?
 
         Raw.FPDF_CloseDocument(state[:handle])
         state[:closed] = true
@@ -186,7 +186,7 @@ module Rpdfium
       @form_env&.close
       @page_cache.each_value(&:close)
       @page_cache.clear
-      Raw.FPDF_CloseDocument(@handle) unless @handle.nil?
+      Raw.FPDF_CloseDocument(@handle) unless @handle.null?
       @handle = FFI::Pointer::NULL
       @retain_buffer = nil
       @closed = true
