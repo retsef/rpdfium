@@ -76,11 +76,15 @@ module Rpdfium
       end
     end
 
+    def handle
+      @state[:handle]
+    end
+
     # ===== Pages =====
 
     def page_count
       ensure_open!
-      Raw.FPDF_GetPageCount(@handle)
+      Raw.FPDF_GetPageCount(handle)
     end
     alias size page_count
     alias length page_count
@@ -102,21 +106,21 @@ module Rpdfium
     end
 
     def page_label(index)
-      Raw.read_utf16_string(:FPDF_GetPageLabel, @handle, index)
+      Raw.read_utf16_string(:FPDF_GetPageLabel, handle, index)
     end
 
     # ===== Metadata =====
 
     def metadata
       META_KEYS.each_with_object({}) do |key, h|
-        v = Raw.read_utf16_string(:FPDF_GetMetaText, @handle, key)
+        v = Raw.read_utf16_string(:FPDF_GetMetaText, handle, key)
         h[key.downcase.to_sym] = v unless v.empty?
       end
     end
 
     def file_version
       buf = FFI::MemoryPointer.new(:int)
-      return nil if Raw.FPDF_GetFileVersion(@handle, buf) == 0
+      return nil if Raw.FPDF_GetFileVersion(handle, buf) == 0
 
       v = buf.read_int
       # PDFium ritorna 14 → 1.4, 17 → 1.7
@@ -136,7 +140,7 @@ module Rpdfium
     }.freeze
 
     def permissions
-      bits = Raw.FPDF_GetDocPermissions(@handle)
+      bits = Raw.FPDF_GetDocPermissions(handle)
       PERMISSIONS.transform_values { |mask| (bits & mask) == mask }
     end
 
@@ -150,7 +154,7 @@ module Rpdfium
     }.freeze
 
     def form_type
-      FORM_TYPES[Raw.FPDF_GetFormType(@handle)] || :unknown
+      FORM_TYPES[Raw.FPDF_GetFormType(handle)] || :unknown
     end
 
     def has_forms?
@@ -173,33 +177,40 @@ module Rpdfium
     # ===== Attachments =====
 
     def attachments
-      n = Raw.FPDFDoc_GetAttachmentCount(@handle)
+      n = Raw.FPDFDoc_GetAttachmentCount(handle)
       Array.new(n) { |i| Attachment.new(self, i) }
     end
 
     # ===== Close =====
 
     def close
-      return if @closed
+      return if closed?
 
-      # Ordine: chiudi prima form env e pagine cached, poi documento.
+      # Ordine corretto: prima chiudi tutto ciò che dipende dal documento,
+      # poi il documento stesso. Questo è il path "manuale": la cascata
+      # è sotto il nostro controllo, non in mano al GC.
       @form_env&.close
       @page_cache.each_value(&:close)
       @page_cache.clear
-      Raw.FPDF_CloseDocument(@handle) unless @handle.null?
-      @handle = FFI::Pointer::NULL
-      @retain_buffer = nil
-      @closed = true
+
+      Raw.FPDF_CloseDocument(handle)
+      @state[:handle] = FFI::Pointer::NULL
+      @state[:retain_buffer] = nil
+      @state[:closed] = true
+
+      # Disarma il finalizer: non c'è più nulla da chiudere, evitiamo
+      # qualsiasi possibilità di doppia chiamata via GC.
+      ObjectSpace.undefine_finalizer(self)
     end
 
     def closed?
-      @closed
+      @state[:closed]
     end
 
     private
 
     def ensure_open!
-      raise Error, "Document is closed" if @closed
+      raise Error, "Document is closed" if closed?
     end
 
     def load_handle(input, password)

@@ -6,35 +6,41 @@ module Rpdfium
   # x cresce verso destra, y verso il basso. PDFium usa "bottom-up" — la
   # conversione avviene qui una volta sola.
   class Page
-    attr_reader :document, :index, :handle
+    attr_reader :document, :index, :state
 
     def initialize(document, index)
       @document = document
       @index    = index
-      @handle   = Raw.FPDF_LoadPage(document.handle, index)
-      raise PageError, "Could not load page #{index}" if @handle.null?
+      handle    = Raw.FPDF_LoadPage(document.handle, index)
+      raise PageError, "Could not load page #{index}" if handle.null?
 
       @text_page = nil
-      @closed = false
-      ObjectSpace.define_finalizer(self, self.class.finalizer(@handle))
+      @state = { handle: handle, closed: false }
+      ObjectSpace.define_finalizer(self, self.class.finalizer(@state))
     end
 
-    def self.finalizer(handle)
-      proc { Raw.FPDF_ClosePage(handle) unless handle.null? }
+    def self.finalizer(state)
+      proc do
+        next if state[:closed]
+        next if state[:handle].null?
+
+        Raw.FPDF_ClosePage(state[:handle])
+        state[:closed] = true
+      end
     end
 
     # ===== Geometria =====
 
-    def width;    Raw.FPDF_GetPageWidthF(@handle); end
-    def height;   Raw.FPDF_GetPageHeightF(@handle); end
+    def width;    Raw.FPDF_GetPageWidthF(handle); end
+    def height;   Raw.FPDF_GetPageHeightF(handle); end
 
     # Rotazione in gradi: 0/90/180/270
     def rotation
-      [0, 90, 180, 270][Raw.FPDFPage_GetRotation(@handle)] || 0
+      [0, 90, 180, 270][Raw.FPDFPage_GetRotation(handle)] || 0
     end
 
     def has_transparency?
-      Raw.FPDFPage_HasTransparency(@handle) == 1
+      Raw.FPDFPage_HasTransparency(handle) == 1
     end
 
     BOX_FUNCTIONS = {
@@ -445,13 +451,22 @@ module Rpdfium
       @text_page ||= TextPage.new(self)
     end
 
+    def handle
+      @state[:handle]
+    end
+
     def close
-      return if @closed
+      return if closed?
 
       @text_page&.close
-      Raw.FPDF_ClosePage(@handle) unless @handle.null?
-      @handle = FFI::Pointer::NULL
-      @closed = true
+      Raw.FPDF_ClosePage(handle)
+      @state[:handle] = FFI::Pointer::NULL
+      @state[:closed] = true
+      ObjectSpace.undefine_finalizer(self)
+    end
+
+    def closed?
+      @state[:closed]
     end
 
     private
@@ -522,30 +537,45 @@ module Rpdfium
 
   # Wrapper per FPDF_TEXTPAGE
   class TextPage
-    attr_reader :handle
+    attr_reader :state
 
     def initialize(page)
-      @handle = Raw.FPDFText_LoadPage(page.handle)
-      raise PageError, "Could not load text page" if @handle.null?
+      handle = Raw.FPDFText_LoadPage(page.handle)
+      raise PageError, "Could not load text page" if handle.null?
 
-      @closed = false
-      ObjectSpace.define_finalizer(self, self.class.finalizer(@handle))
+      @state = { handle: handle, closed: false }
+      ObjectSpace.define_finalizer(self, self.class.finalizer(@state))
     end
 
-    def self.finalizer(handle)
-      proc { Raw.FPDFText_ClosePage(handle) unless handle.null? }
+    def self.finalizer(state)
+      proc do
+        next if state[:closed]
+        next if state[:handle].null?
+
+        Raw.FPDF_ClosePage(state[:handle])
+        state[:closed] = true
+      end
     end
 
     def char_count
-      Raw.FPDFText_CountChars(@handle)
+      Raw.FPDFText_CountChars(handle)
+    end
+
+    def handle
+      @state[:handle]
+    end
+
+    def closed?
+      @state[:closed]
     end
 
     def close
-      return if @closed
+      return if closed?
 
-      Raw.FPDFText_ClosePage(@handle) unless @handle.null?
-      @handle = FFI::Pointer::NULL
-      @closed = true
+      Raw.FPDFText_ClosePage(handle)
+      @state[:handle] = FFI::Pointer::NULL
+      @state[:closed] = true
+      ObjectSpace.undefine_finalizer(self)
     end
   end
 end

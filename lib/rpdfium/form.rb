@@ -11,29 +11,54 @@ module Rpdfium
 
       def initialize(document)
         @document = document
-        @info = Raw::FPDF_FORMFILLINFO.new
-        @info[:version] = 2
+
+        info = Raw::FPDF_FORMFILLINFO.new
+        info[:version] = 2
+
         # Tutti i puntatori restano NULL (default di FFI::Struct).
-        @handle = Raw.FPDFDOC_InitFormFillEnvironment(document.handle, @info)
-        if @handle.null?
+        handle = Raw.FPDFDOC_InitFormFillEnvironment(document.handle, @info)
+        if handle.null?
           raise FormError,
                 "FPDFDOC_InitFormFillEnvironment failed (form_type=#{document.form_type})"
         end
-        @closed = false
-        ObjectSpace.define_finalizer(self, self.class.finalizer(@handle))
+
+        @state = { handle: handle, closed: false, info: info }
+        ObjectSpace.define_finalizer(self, self.class.finalizer(@state))
       end
 
-      def self.finalizer(handle)
-        proc { Raw.FPDFDOC_ExitFormFillEnvironment(handle) unless handle.null? }
+
+      def self.finalizer(state)
+        proc do
+          next if state[:closed]
+          next if state[:handle].null?
+
+          Raw.FPDF_ClosePage(state[:handle])
+          state[:closed] = true
+        end
+      end
+
+      def handle
+        @state[:handle]
+      end
+
+      def info
+        @state[:info]
+      end
+
+      def closed?
+        @state[:closed]
       end
 
       def close
-        return if @closed
+        return if closed?
 
-        Raw.FPDFDOC_ExitFormFillEnvironment(@handle) unless @handle.null?
-        @handle = FFI::Pointer::NULL
-        @info = nil
-        @closed = true
+        Raw.FPDFDOC_ExitFormFillEnvironment(handle)
+
+        @state[:handle] = FFI::Pointer::NULL
+        @state[:closed] = true
+        @state[:info] = nil
+
+        ObjectSpace.undefine_finalizer(self)
       end
     end
 

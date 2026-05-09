@@ -25,29 +25,35 @@ module Rpdfium
       Raw::FPDF_ANNOT_REDACT => :redact
     }.freeze
 
-    attr_reader :page, :index, :handle
+    attr_reader :page, :index, :state
 
     def initialize(page, index)
       @page   = page
       @index  = index
-      @handle = Raw.FPDFPage_GetAnnot(page.handle, index)
-      raise Error, "Could not load annotation #{index}" if @handle.null?
+      handle = Raw.FPDFPage_GetAnnot(page.handle, index)
+      raise Error, "Could not load annotation #{index}" if handle.null?
 
-      @closed = false
-      ObjectSpace.define_finalizer(self, self.class.finalizer(@handle))
+      @state = { handle: handle, closed: false }
+      ObjectSpace.define_finalizer(self, self.class.finalizer(@state))
     end
 
-    def self.finalizer(handle)
-      proc { Raw.FPDFPage_CloseAnnot(handle) unless handle.null? }
+    def self.finalizer(state)
+      proc do
+        next if state[:closed]
+        next if state[:handle].null?
+
+        Raw.FPDF_ClosePage(state[:handle])
+        state[:closed] = true
+      end
     end
 
     def subtype
-      SUBTYPES[Raw.FPDFAnnot_GetSubtype(@handle)] || :unknown
+      SUBTYPES[Raw.FPDFAnnot_GetSubtype(handle)] || :unknown
     end
 
     def bbox
       rect = Raw::FS_RECTF.new
-      return nil if Raw.FPDFAnnot_GetRect(@handle, rect) == 0
+      return nil if Raw.FPDFAnnot_GetRect(handle, rect) == 0
 
       h = @page.height
       { x0: rect[:left], x1: rect[:right],
@@ -58,18 +64,18 @@ module Rpdfium
     # Chiavi comuni: "Contents" (testo annotazione), "T" (autore),
     # "M" (mod date), "NM" (uniq name).
     def [](key)
-      Raw.read_utf16_string(:FPDFAnnot_GetStringValue, @handle, key.to_s)
+      Raw.read_utf16_string(:FPDFAnnot_GetStringValue, handle, key.to_s)
     end
 
     def has_key?(key)
-      Raw.FPDFAnnot_HasKey(@handle, key.to_s) == 1
+      Raw.FPDFAnnot_HasKey(handle, key.to_s) == 1
     end
 
     # Per annotazioni :link → URL di destinazione (se esterno) o nil.
     def link_uri
       return nil unless subtype == :link
 
-      link_handle = Raw.FPDFAnnot_GetLink(@handle)
+      link_handle = Raw.FPDFAnnot_GetLink(handle)
       return nil if link_handle.null?
 
       action = Raw.FPDFLink_GetAction(link_handle)
@@ -82,7 +88,7 @@ module Rpdfium
     def link_dest_page
       return nil unless subtype == :link
 
-      link_handle = Raw.FPDFAnnot_GetLink(@handle)
+      link_handle = Raw.FPDFAnnot_GetLink(handle)
       return nil if link_handle.null?
 
       dest = Raw.FPDFLink_GetDest(@page.document.handle, link_handle)
@@ -92,12 +98,21 @@ module Rpdfium
       idx >= 0 ? idx : nil
     end
 
-    def close
-      return if @closed
+    def handle
+      @state[:handle]
+    end
 
-      Raw.FPDFPage_CloseAnnot(@handle) unless @handle.null?
-      @handle = FFI::Pointer::NULL
-      @closed = true
+    def closed?
+      @state[:closed]
+    end
+
+    def close
+      return if closed?
+
+      Raw.FPDFPage_CloseAnnot(handle) unless handle.null?
+      @state[:handle] = FFI::Pointer::NULL
+      @state[:closed] = true
+      ObjectSpace.undefine_finalizer(self)
     end
   end
 end
