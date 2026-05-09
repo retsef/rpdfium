@@ -79,26 +79,35 @@ module Rpdfium
 
     # Estrae il testo dentro una bbox arbitraria (top-down coords).
     # Utile per "leggi l'intestazione di questa cella".
-    def text_in_bbox(left:, top:, right:, bottom:)
-      tp = text_page
-      h = height
-      # Converti a bottom-up per PDFium
-      pdf_top    = h - top
-      pdf_bottom = h - bottom
-      # PDFium vuole: left, top, right, bottom dove top > bottom (PDF coords)
-      # Probe size:
-      n = Raw.FPDFText_GetBoundedText(
-        tp.handle, left, pdf_top, right, pdf_bottom, FFI::Pointer::NULL, 0
-      )
-      return "" if n <= 0
+    def text_in_bbox(left:, top:, right:, bottom:, x_tolerance: 3.0,
+                     y_tolerance: 3.0)
+      # Variante layout-aware: invece di delegare a FPDFText_GetBoundedText
+      # (che usa ordine content-stream), seleziona i char per geometria e
+      # li riassembla in ordine di lettura (top-to-bottom, left-to-right).
+      in_box = chars.select do |c|
+        cx = (c[:x0] + c[:x1]) / 2.0
+        cy = (c[:top] + c[:bottom]) / 2.0
+        cx.between?(left, right) && cy.between?(top, bottom)
+      end
+      return "" if in_box.empty?
 
-      buf = FFI::MemoryPointer.new(:ushort, n)
-      Raw.FPDFText_GetBoundedText(
-        tp.handle, left, pdf_top, right, pdf_bottom, buf, n
-      )
-      buf.read_bytes(n * 2).force_encoding("UTF-16LE")
-        .encode("UTF-8", invalid: :replace, undef: :replace)
-        .delete("\x00")
+      # Cluster per riga (y vicine entro y_tolerance)
+      rows = in_box.sort_by { |c| [c[:top], c[:x0]] }
+                   .slice_when { |a, b| (b[:top] - a[:top]).abs > y_tolerance }
+                   .to_a
+
+      rows.map do |row|
+        sorted = row.sort_by { |c| c[:x0] }
+        # Inserisci spazio dove c'è gap orizzontale > x_tolerance
+        out = +""
+        sorted.each_with_index do |c, i|
+          if i.positive? && (c[:x0] - sorted[i - 1][:x1]) > x_tolerance
+            out << " "
+          end
+          out << c[:char]
+        end
+        out
+      end.join(" ").strip
     end
 
     # ===== Caratteri (char-level) =====
