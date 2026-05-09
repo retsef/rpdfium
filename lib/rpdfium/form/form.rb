@@ -15,7 +15,7 @@ module Rpdfium
         @info[:version] = 2
         # Tutti i puntatori restano NULL (default di FFI::Struct).
         @handle = Raw.FPDFDOC_InitFormFillEnvironment(document.handle, @info)
-        if @handle.null?
+        if @handle.nil?
           raise FormError,
                 "FPDFDOC_InitFormFillEnvironment failed (form_type=#{document.form_type})"
         end
@@ -24,13 +24,13 @@ module Rpdfium
       end
 
       def self.finalizer(handle)
-        proc { Raw.FPDFDOC_ExitFormFillEnvironment(handle) unless handle.null? }
+        proc { Raw.FPDFDOC_ExitFormFillEnvironment(handle) unless handle.nil? }
       end
 
       def close
         return if @closed
 
-        Raw.FPDFDOC_ExitFormFillEnvironment(@handle) unless @handle.null?
+        Raw.FPDFDOC_ExitFormFillEnvironment(@handle) unless @handle.nil?
         @handle = FFI::Pointer::NULL
         @info = nil
         @closed = true

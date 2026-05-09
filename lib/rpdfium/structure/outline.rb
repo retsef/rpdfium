@@ -19,10 +19,10 @@ module Rpdfium
     def self.build_siblings(doc, bookmark_handle)
       result = []
       ptr = bookmark_handle
-      until ptr.null?
+      until ptr.nil?
         title = Raw.read_utf16_string(:FPDFBookmark_GetTitle, ptr)
         dest  = Raw.FPDFBookmark_GetDest(doc.handle, ptr)
-        idx   = dest.null? ? nil : Raw.FPDFDest_GetDestPageIndex(doc.handle, dest)
+        idx   = dest.nil? ? nil : Raw.FPDFDest_GetDestPageIndex(doc.handle, dest)
         idx = nil if idx == -1
         children_handle = Raw.FPDFBookmark_GetFirstChild(doc.handle, ptr)
         children = build_siblings(doc, children_handle)

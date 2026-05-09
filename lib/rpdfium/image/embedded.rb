@@ -99,7 +99,7 @@ module Rpdfium
         bitmap = Raw.FPDFImageObj_GetRenderedBitmap(
           @page.document.handle, @page.handle, @handle
         )
-        return nil if bitmap.null?
+        return nil if bitmap.nil?
 
         begin
           w = Raw.FPDFBitmap_GetWidth(bitmap)

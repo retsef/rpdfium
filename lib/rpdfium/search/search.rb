@@ -23,13 +23,13 @@ module Rpdfium
 
       @handle = Raw.FPDFText_FindStart(@page.text_page.handle, @query_buf,
                                         flags, start_index)
-      raise Error, "FindStart failed" if @handle.null?
+      raise Error, "FindStart failed" if @handle.nil?
 
       ObjectSpace.define_finalizer(self, self.class.finalizer(@handle))
     end
 
     def self.finalizer(handle)
-      proc { Raw.FPDFText_FindClose(handle) unless handle.null? }
+      proc { Raw.FPDFText_FindClose(handle) unless handle.nil? }
     end
 
     # Itera tutte le occorrenze in avanti. Ritorna hash con :char_index, :length,
@@ -55,7 +55,7 @@ module Rpdfium
     end
 
     def close
-      Raw.FPDFText_FindClose(@handle) unless @handle.null?
+      Raw.FPDFText_FindClose(@handle) unless @handle.nil?
       @handle = FFI::Pointer::NULL
     end
 
