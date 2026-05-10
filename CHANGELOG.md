@@ -3,6 +3,70 @@
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [0.3.2] - punteggiatura preservata nelle celle tabellari
+
+### Risolto
+
+**`Page#chars` ora ritorna bbox "loose" di default** (`loose: true`),
+allineando il comportamento a quello di `pdfminer.six`. Le bbox loose
+sono uniformi per riga: tutti i char della stessa linea logica condividono
+top/bottom proporzionali alla font-size, invece dei tight glyph box che
+PDFium darebbe nativamente.
+
+#### Perché era un problema
+
+Le bbox tight rispettano il singolo glifo. Un `.` (punto decimale) ha
+una bbox alta ~0.85pt, mentre un `5` accanto ne ha ~7pt sulla stessa
+linea. I loro midpoint verticali differiscono di ~3pt — quanto basta a
+far cadere il `.` fuori dalla bbox cella nel filtro `Table#extract`,
+che usa il midpoint per decidere quali char appartengono alla cella
+(stessa scelta di pdfplumber).
+
+Effetto sul cedolino TeamSystem: valori come `1.993,00`, `2.857,15`,
+`7.788,60` venivano estratti come `1 993 00`, `2 857 15`, `7 788 60` —
+la punteggiatura cadeva fuori. Con loose box, tutti i char della riga
+hanno lo stesso midpoint verticale, e i punti/virgole arrivano dentro
+la cella.
+
+#### Confronto con pdfplumber
+
+Sul cedolino di test `busta_paga.pdf`:
+
+| Cella                | rpdfium 0.3.1 | rpdfium 0.3.2 | pdfplumber |
+| -------------------- | ------------: | ------------: | ---------: |
+| Netto Busta          |       `1 993 00` |   `1.993,00` |  `1.993,00` |
+| Imponibile IRPEF MESE |    `2 618 84` |   `2.618,84` |  `2.618,84` |
+| TFR Spettante        |       `3 446 15` |   `3.446,15` |  `3.446,15` |
+| Retr. di Fatto       |       `2 857 15` |   `2.857,15` |  `2.857,15` |
+
+### Aggiunto
+
+- **`Page#chars(inject_spaces: true)`**: opt-in che inietta spazi
+  sintetici nei gap orizzontali significativi (gap > 0.85 × char width)
+  della stessa riga. Approssima il comportamento di pdfminer.six per
+  parole adiacenti che PDFium fonderebbe per via del kerning. Può
+  produrre falsi positivi su font condensati. **Default `false`**:
+  preferiamo "non spezzare parole valide" rispetto a "catturare ogni
+  spazio mancante", in linea con la filosofia "quello che PDFium emette
+  è la verità".
+
+- Helper privato `Page#inject_synthetic_spaces` esposto come API
+  pubblica per chi vuole post-processare i char.
+
+- Cache di `Page#chars` per (loose, inject_spaces): ricostruire
+  l'array di char è O(n) di chiamate FFI, costoso su pagine grosse.
+
+### Limitazioni note
+
+- Sul cedolino di test, `inject_spaces: true` recupera ~80% degli
+  spazi inter-parola persi (es. `NETTO BUSTA`), ma introduce qualche
+  falso positivo (es. `Sede pr incipale`). Questo è un trade-off
+  intrinseco di PDFium che non espone l'advance del font dal content
+  stream, l'unica metrica davvero affidabile per decidere "spazio o no".
+  Per estrazione testuale che richiede spazi perfetti, considerare
+  pdfminer.six (e quindi pdfplumber); per estrazione tabellare con
+  punteggiatura preservata, rpdfium è ora allineato.
+
 ## [0.3.1] - discesa nei Form XObjects
 
 ### Risolto

@@ -129,9 +129,96 @@ module Rpdfium
     #   :hyphen   true se trattino di sillabazione
     #   :unicode_error  true se PDFium non ha potuto mapparlo
     #
-    # `loose: true` usa FPDFText_GetLooseCharBox che dà bbox proporzionali
-    # alla font size: più stabili per algoritmi di layout (raccomandato).
-    def chars(loose: false)
+    # `loose: true` (DEFAULT) usa FPDFText_GetLooseCharBox: tutti i char
+    # della stessa linea logica condividono la stessa bbox verticale (top/
+    # bottom), proporzionale alla font size invece che al singolo glifo. È
+    # esattamente il comportamento di pdfminer.six/pdfplumber, e l'unico
+    # che permette al midpoint-test in Table#extract di catturare anche i
+    # char di punteggiatura (`.`, `,`) insieme ai numeri allineati alla
+    # baseline. Con `loose: false` si ottengono le bbox "tight" del singolo
+    # glifo, utili per misure di layout fine ma sbagliate per il filtro
+    # cella tabellare.
+    def chars(loose: true, inject_spaces: false)
+      # Cache: chars() viene chiamato una volta da Table#extract e poi
+      # nuovamente da WordExtractor (passando per Extractor#page_words se
+      # vertical/horizontal_strategy è :text). Ogni chiamata costa O(n) FFI
+      # roundtrip per char — costoso su pagine con migliaia di char.
+      cache_key = [loose, inject_spaces]
+      @chars_cache ||= {}
+      return @chars_cache[cache_key] if @chars_cache.key?(cache_key)
+
+      raw = compute_chars(loose: loose)
+      result = inject_spaces ? inject_synthetic_spaces(raw) : raw
+      @chars_cache[cache_key] = result
+    end
+
+    # Post-processing OPT-IN: inserisce char `:generated` di tipo spazio
+    # dove ci sono gap orizzontali significativi tra char della stessa
+    # riga, per avvicinare il comportamento di rpdfium a quello di
+    # pdfminer.six (che pdfplumber usa internamente).
+    #
+    # PDFium NON inserisce spazi sintetici nei "salti" del content stream
+    # (es. tra "NETTO" e "BUSTA" se sono nello stesso text show con un
+    # piccolo offset). pdfminer.six lo fa invece tramite il parametro
+    # `word_margin`. Senza questi spazi, il WordExtractor non ha modo di
+    # capire che due gruppi di char vicini sono parole separate.
+    #
+    # ATTENZIONE: la soglia 0.85 × char_width è un compromesso. PDFium non
+    # espone l'advance del font dal content stream (l'unica info davvero
+    # affidabile per decidere "spazio o no"); con char condensati come
+    # quelli dei cedolini TeamSystem, alcuni gap interni tra glifi sono
+    # genuinamente al limite con i gap inter-parola. Il default 0.85
+    # privilegia "non spezzare parole valide" rispetto a "catturare ogni
+    # spazio mancante". Per text-extraction più pdfminer-like, l'utente
+    # può chiamare chars(inject_spaces: true) e accettare qualche falso
+    # positivo (es. "Sede pr inc ipale" invece di "Sede principale").
+    def inject_synthetic_spaces(chars)
+      # Cluster per riga PRIMA del sort. Char della stessa riga visiva
+      # possono avere `top` leggermente diversi (es. 88.406 vs 88.428,
+      # differenza tipografica tra glifi con/senza descender). Ordinare
+      # solo per [top, x0] li intercala sbagliato (tutti 88.406 poi tutti
+      # 88.428), creando gap fittizi che generano spazi spuria.
+      sorted_top = chars.sort_by { |c| c[:top] }
+      rows = []
+      sorted_top.each do |c|
+        if rows.last && (c[:top] - rows.last.last[:top]).abs <= 1.0
+          rows.last << c
+        else
+          rows << [c]
+        end
+      end
+
+      result = []
+      rows.each do |row|
+        row_sorted = row.sort_by { |c| c[:x0] }
+        prev = nil
+        row_sorted.each do |c|
+          if prev &&
+             c[:char] != " " && prev[:char] != " " &&
+             !prev[:generated] && !c[:generated]
+            gap = c[:x0] - prev[:x1]
+            char_w = ((prev[:x1] - prev[:x0]) + (c[:x1] - c[:x0])) / 2.0
+            threshold = char_w > 0 ? char_w * 0.85 : 1.5
+            if gap > threshold
+              result << {
+                char: " ", codepoint: 32,
+                x0: prev[:x1], x1: c[:x0],
+                top: prev[:top], bottom: prev[:bottom],
+                origin_x: prev[:x1], origin_y: prev[:origin_y],
+                angle: 0.0, fontsize: prev[:fontsize], font: prev[:font],
+                weight: prev[:weight], render_mode: nil,
+                generated: true, hyphen: false, unicode_error: false
+              }
+            end
+          end
+          result << c
+          prev = c
+        end
+      end
+      result
+    end
+
+    def compute_chars(loose:)
       tp = text_page
       n = tp.char_count
       return [] if n.zero?
