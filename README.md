@@ -215,22 +215,37 @@ w, h, bytes, stride = page.render(scale: 2.0, output: :rgba)
 
 ```ruby
 extractor = Rpdfium::Table::Extractor.new(page,
-  vertical_strategy:        :lines,    # :lines / :text / :explicit / :lines_strict
+  vertical_strategy:        :lines,    # :lines / :lines_strict / :text / :explicit
   horizontal_strategy:      :lines,
   snap_tolerance:           3.0,
   join_tolerance:           3.0,
   edge_min_length:          3.0,
+  edge_min_length_prefilter: 1.0,
   intersection_tolerance:   3.0,
   min_words_vertical:       3,
   min_words_horizontal:     1,
+  text_x_tolerance:         3.0,
+  text_y_tolerance:         3.0,
   explicit_vertical_lines:  [],         # [Float] x-coords or [Hash{x:, top:, bottom:}]
   explicit_horizontal_lines: [],
   auto_fallback:            true        # try :text if :lines finds nothing
 )
 
-extractor.extract  # → [[[String, ...], ...], ...]   (list of tables)
-extractor.find     # → table structures without text extraction (for debug)
+extractor.tables.each do |table|
+  table.bbox             # => [x0, top, x1, bottom]
+  table.rows             # => Array<Array<bbox|nil>>
+  table.columns          # => Array<Array<bbox|nil>>
+  table.extract          # => Array<Array<String>>
+end
+
+extractor.extract  # shortcut: => [[[String, ...], ...], ...]   (list of tables)
+extractor.edges    # post-snap/join edges
+extractor.intersections   # Hash{[x,y] => {v:[edges], h:[edges]}}
+extractor.cells           # Array<bbox>
 ```
+
+The pipeline mirrors `pdfplumber.TableFinder` 1:1 and uses the same
+algorithms for words-to-edges, intersections-to-cells, cells-to-tables.
 
 Visual debugger (saves PNG with overlay: red lines, green intersections,
 blue table fills):

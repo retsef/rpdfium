@@ -6,7 +6,7 @@ module Rpdfium
   # x cresce verso destra, y verso il basso. PDFium usa "bottom-up" — la
   # conversione avviene qui una volta sola.
   class Page
-    attr_reader :document, :index, :state
+    attr_reader :document, :index
 
     def initialize(document, index)
       @document = document
@@ -15,6 +15,10 @@ module Rpdfium
       raise PageError, "Could not load page #{index}" if handle.null?
 
       @text_page = nil
+      # Stato condiviso col finalizer: idempotenza su close, sopravvive al GC
+      # senza fare doppia chiamata FPDF_ClosePage. Tenere un riferimento a
+      # @document garantisce che il Document non venga raccolto prima della
+      # Page (FPDF_ClosePage richiede Document ancora vivo).
       @state = { handle: handle, closed: false }
       ObjectSpace.define_finalizer(self, self.class.finalizer(@state))
     end
@@ -29,18 +33,22 @@ module Rpdfium
       end
     end
 
+    def handle
+      @state[:handle]
+    end
+
     # ===== Geometria =====
 
-    def width;    Raw.FPDF_GetPageWidthF(handle); end
-    def height;   Raw.FPDF_GetPageHeightF(handle); end
+    def width;    Raw.FPDF_GetPageWidthF(@state[:handle]); end
+    def height;   Raw.FPDF_GetPageHeightF(@state[:handle]); end
 
     # Rotazione in gradi: 0/90/180/270
     def rotation
-      [0, 90, 180, 270][Raw.FPDFPage_GetRotation(handle)] || 0
+      [0, 90, 180, 270][Raw.FPDFPage_GetRotation(@state[:handle])] || 0
     end
 
     def has_transparency?
-      Raw.FPDFPage_HasTransparency(handle) == 1
+      Raw.FPDFPage_HasTransparency(@state[:handle]) == 1
     end
 
     BOX_FUNCTIONS = {
@@ -57,7 +65,7 @@ module Rpdfium
       b = FFI::MemoryPointer.new(:float)
       r = FFI::MemoryPointer.new(:float)
       t = FFI::MemoryPointer.new(:float)
-      return nil if Raw.send(fn, @handle, l, b, r, t) == 0
+      return nil if Raw.send(fn, @state[:handle], l, b, r, t) == 0
 
       { left: l.read_float, bottom: b.read_float,
         right: r.read_float, top: t.read_float }
@@ -79,35 +87,26 @@ module Rpdfium
 
     # Estrae il testo dentro una bbox arbitraria (top-down coords).
     # Utile per "leggi l'intestazione di questa cella".
-    def text_in_bbox(left:, top:, right:, bottom:, x_tolerance: 3.0,
-                     y_tolerance: 3.0)
-      # Variante layout-aware: invece di delegare a FPDFText_GetBoundedText
-      # (che usa ordine content-stream), seleziona i char per geometria e
-      # li riassembla in ordine di lettura (top-to-bottom, left-to-right).
-      in_box = chars.select do |c|
-        cx = (c[:x0] + c[:x1]) / 2.0
-        cy = (c[:top] + c[:bottom]) / 2.0
-        cx.between?(left, right) && cy.between?(top, bottom)
-      end
-      return "" if in_box.empty?
+    def text_in_bbox(left:, top:, right:, bottom:)
+      tp = text_page
+      h = height
+      # Converti a bottom-up per PDFium
+      pdf_top    = h - top
+      pdf_bottom = h - bottom
+      # PDFium vuole: left, top, right, bottom dove top > bottom (PDF coords)
+      # Probe size:
+      n = Raw.FPDFText_GetBoundedText(
+        tp.handle, left, pdf_top, right, pdf_bottom, FFI::Pointer::NULL, 0
+      )
+      return "" if n <= 0
 
-      # Cluster per riga (y vicine entro y_tolerance)
-      rows = in_box.sort_by { |c| [c[:top], c[:x0]] }
-                   .slice_when { |a, b| (b[:top] - a[:top]).abs > y_tolerance }
-                   .to_a
-
-      rows.map do |row|
-        sorted = row.sort_by { |c| c[:x0] }
-        # Inserisci spazio dove c'è gap orizzontale > x_tolerance
-        out = +""
-        sorted.each_with_index do |c, i|
-          if i.positive? && (c[:x0] - sorted[i - 1][:x1]) > x_tolerance
-            out << " "
-          end
-          out << c[:char]
-        end
-        out
-      end.join(" ").strip
+      buf = FFI::MemoryPointer.new(:ushort, n)
+      Raw.FPDFText_GetBoundedText(
+        tp.handle, left, pdf_top, right, pdf_bottom, buf, n
+      )
+      buf.read_bytes(n * 2).force_encoding("UTF-16LE")
+        .encode("UTF-8", invalid: :replace, undef: :replace)
+        .delete("\x00")
     end
 
     # ===== Caratteri (char-level) =====
@@ -266,12 +265,12 @@ module Rpdfium
     # verticali "puri". Beziers e segmenti obliqui vengono ignorati di default
     # (passa `include_curves: true` per averli come bbox dei loro punti).
     def line_segments(include_curves: false)
-      n = Raw.FPDFPage_CountObjects(@handle)
+      n = Raw.FPDFPage_CountObjects(@state[:handle])
       h = height
       out = []
 
       n.times do |i|
-        obj = Raw.FPDFPage_GetObject(@handle, i)
+        obj = Raw.FPDFPage_GetObject(@state[:handle], i)
         next if obj.null?
         next unless Raw.FPDFPageObj_GetType(obj) == Raw::PAGEOBJ_PATH
 
@@ -348,7 +347,7 @@ module Rpdfium
     # Compat con la prima versione: bbox dei path objects (utile per
     # rectangles disegnati come bordi sottili).
     def vector_rects
-      n = Raw.FPDFPage_CountObjects(@handle)
+      n = Raw.FPDFPage_CountObjects(@state[:handle])
       h = height
       out = []
 
@@ -358,7 +357,7 @@ module Rpdfium
       t = FFI::MemoryPointer.new(:float)
 
       n.times do |i|
-        obj = Raw.FPDFPage_GetObject(@handle, i)
+        obj = Raw.FPDFPage_GetObject(@state[:handle], i)
         next if obj.null?
         next unless Raw.FPDFPageObj_GetType(obj) == Raw::PAGEOBJ_PATH
         next unless Raw.FPDFPageObj_GetBounds(obj, l, r, b, t) == 1
@@ -372,10 +371,10 @@ module Rpdfium
     # ===== Immagini =====
 
     def images
-      n = Raw.FPDFPage_CountObjects(@handle)
+      n = Raw.FPDFPage_CountObjects(@state[:handle])
       out = []
       n.times do |i|
-        obj = Raw.FPDFPage_GetObject(@handle, i)
+        obj = Raw.FPDFPage_GetObject(@state[:handle], i)
         next if obj.null?
         next unless Raw.FPDFPageObj_GetType(obj) == Raw::PAGEOBJ_IMAGE
 
@@ -387,7 +386,7 @@ module Rpdfium
     # ===== Annotazioni =====
 
     def annotations
-      n = Raw.FPDFPage_GetAnnotCount(@handle)
+      n = Raw.FPDFPage_GetAnnotCount(@state[:handle])
       Array.new(n) { |i| Annotation.new(self, i) }
     end
 
@@ -424,10 +423,10 @@ module Rpdfium
 
       begin
         Raw.FPDFBitmap_FillRect(bitmap, 0, 0, w, h, background)
-        Raw.FPDF_RenderPageBitmap(bitmap, @handle, 0, 0, w, h,
+        Raw.FPDF_RenderPageBitmap(bitmap, @state[:handle], 0, 0, w, h,
                                   rotation_index(rotate), flags)
         if include_forms && @document.form_env
-          Raw.FPDF_FFLDraw(@document.form_env.handle, bitmap, @handle,
+          Raw.FPDF_FFLDraw(@document.form_env.handle, bitmap, @state[:handle],
                            0, 0, w, h, rotation_index(rotate), flags)
         end
         stride = Raw.FPDFBitmap_GetStride(bitmap)
@@ -460,22 +459,14 @@ module Rpdfium
       @text_page ||= TextPage.new(self)
     end
 
-    def handle
-      @state[:handle]
-    end
-
     def close
-      return if closed?
+      return if @state[:closed]
 
       @text_page&.close
-      Raw.FPDF_ClosePage(handle)
+      Raw.FPDF_ClosePage(@state[:handle]) unless @state[:handle].null?
       @state[:handle] = FFI::Pointer::NULL
       @state[:closed] = true
       ObjectSpace.undefine_finalizer(self)
-    end
-
-    def closed?
-      @state[:closed]
     end
 
     private
@@ -546,8 +537,6 @@ module Rpdfium
 
   # Wrapper per FPDF_TEXTPAGE
   class TextPage
-    attr_reader :state
-
     def initialize(page)
       handle = Raw.FPDFText_LoadPage(page.handle)
       raise PageError, "Could not load text page" if handle.null?
@@ -561,27 +550,23 @@ module Rpdfium
         next if state[:closed]
         next if state[:handle].null?
 
-        Raw.FPDF_ClosePage(state[:handle])
+        Raw.FPDFText_ClosePage(state[:handle])
         state[:closed] = true
       end
-    end
-
-    def char_count
-      Raw.FPDFText_CountChars(handle)
     end
 
     def handle
       @state[:handle]
     end
 
-    def closed?
-      @state[:closed]
+    def char_count
+      Raw.FPDFText_CountChars(@state[:handle])
     end
 
     def close
-      return if closed?
+      return if @state[:closed]
 
-      Raw.FPDFText_ClosePage(handle)
+      Raw.FPDFText_ClosePage(@state[:handle]) unless @state[:handle].null?
       @state[:handle] = FFI::Pointer::NULL
       @state[:closed] = true
       ObjectSpace.undefine_finalizer(self)

@@ -21,15 +21,26 @@ module Rpdfium
       @query_buf = FFI::MemoryPointer.new(:uchar, utf16.bytesize)
       @query_buf.put_bytes(0, utf16)
 
-      @handle = Raw.FPDFText_FindStart(@page.text_page.handle, @query_buf,
-                                        flags, start_index)
-      raise Error, "FindStart failed" if @handle.null?
+      handle = Raw.FPDFText_FindStart(@page.text_page.handle, @query_buf,
+                                       flags, start_index)
+      raise Error, "FindStart failed" if handle.null?
 
-      ObjectSpace.define_finalizer(self, self.class.finalizer(@handle))
+      @state = { handle: handle, closed: false }
+      ObjectSpace.define_finalizer(self, self.class.finalizer(@state))
     end
 
-    def self.finalizer(handle)
-      proc { Raw.FPDFText_FindClose(handle) unless handle.null? }
+    def self.finalizer(state)
+      proc do
+        next if state[:closed]
+        next if state[:handle].null?
+
+        Raw.FPDFText_FindClose(state[:handle])
+        state[:closed] = true
+      end
+    end
+
+    def handle
+      @state[:handle]
     end
 
     # Itera tutte le occorrenze in avanti. Ritorna hash con :char_index, :length,
@@ -37,15 +48,15 @@ module Rpdfium
     def each_match
       return enum_for(:each_match) unless block_given?
 
-      while Raw.FPDFText_FindNext(@handle) == 1
+      while Raw.FPDFText_FindNext(@state[:handle]) == 1
         yield current_match
       end
     end
     alias each each_match
 
     def current_match
-      idx = Raw.FPDFText_GetSchResultIndex(@handle)
-      n   = Raw.FPDFText_GetSchCount(@handle)
+      idx = Raw.FPDFText_GetSchResultIndex(@state[:handle])
+      n   = Raw.FPDFText_GetSchCount(@state[:handle])
       {
         char_index: idx,
         length:     n,
@@ -55,8 +66,12 @@ module Rpdfium
     end
 
     def close
-      Raw.FPDFText_FindClose(@handle) unless @handle.null?
-      @handle = FFI::Pointer::NULL
+      return if @state[:closed]
+
+      Raw.FPDFText_FindClose(@state[:handle]) unless @state[:handle].null?
+      @state[:handle] = FFI::Pointer::NULL
+      @state[:closed] = true
+      ObjectSpace.undefine_finalizer(self)
     end
 
     private

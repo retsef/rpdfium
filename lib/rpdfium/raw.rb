@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "ffi"
+require "rbconfig"
 
 module Rpdfium
   # Layer 1: bindings FFI grezzi alle API C di PDFium.
@@ -10,40 +11,53 @@ module Rpdfium
   module Raw
     extend FFI::Library
 
+    # Costruisce la lista di candidati che `ffi_lib` proverà in ordine.
+    #
+    # ATTENZIONE: FFI auto-appende l'estensione "naturale" della piattaforma
+    # (.dylib su macOS, .so su linux, .dll su windows) quando il path passato
+    # non termina già con un'estensione conosciuta. Quindi se passiamo
+    # `libpdfium.so` su macOS, FFI cerca `libpdfium.so.dylib` — assurdo ma
+    # documentato. Per evitarlo, filtriamo i nomi system_library_names per
+    # OS host.
+    #
+    # Inoltre: ENV["PDFIUM_LIBRARY_PATH"] e Rpdfium::Binary.library_path sono
+    # path ASSOLUTI/ESPLICITI: se non vengono trovati, NON facciamo fallback
+    # a nomi di sistema. Restituiamo subito un array di un solo path: in
+    # quel caso ffi_lib o riesce subito, o lancia LoadError chiaro
+    # (è ciò che vuole l'utente — gli ha dato un path esplicito).
     def self.candidate_paths
-      paths = []
+      explicit = ENV["PDFIUM_LIBRARY_PATH"]
+      return [explicit] if explicit && !explicit.empty?
 
-      # 1. ENV ha priorità assoluta. Se l'utente l'ha settata, è un override
-      #    esplicito: niente euristica, niente fallback.
-      if (env = ENV["PDFIUM_LIBRARY_PATH"]) && !env.empty?
-        return [env]
-      end
-
-      # 2. Gemma rpdfium-binary, se installata.
       if defined?(Rpdfium::Binary) && Rpdfium::Binary.respond_to?(:library_path)
-        begin
-          bp = Rpdfium::Binary.library_path
-          return [bp] if bp && !bp.empty?
-        rescue StandardError
-          # Se il locator esplode (es. download fallito), passa al fallback.
-        end
+        path = Rpdfium::Binary.library_path
+        return [path] if path && !path.empty?
       end
 
-      # 3. Fallback: nomi di sistema, FILTRATI per OS host.
-      #    Mischiare libpdfium.so + libpdfium.dylib confonde FFI: su macOS
-      #    cerca di appendere ".dylib" a "libpdfium.so" → "libpdfium.so.dylib".
-      paths.concat(system_library_names)
-      paths
+      system_library_names
     end
 
+    # Nomi "di sistema" filtrati per OS host. Manteniamo `pdfium` /
+    # `libpdfium` (senza estensione) per primi: FFI auto-appende l'ext giusta.
+    # I nomi con estensione vengono SOLO se matchano l'OS host, così evitiamo
+    # il bug di doppia estensione.
     def self.system_library_names
+      base = %w[pdfium libpdfium]
+      host = host_os
+      ext_specific = case host
+                     when :macos   then %w[libpdfium.dylib]
+                     when :linux   then %w[libpdfium.so]
+                     when :windows then %w[pdfium.dll libpdfium.dll]
+                     else []
+                     end
+      base + ext_specific
+    end
+
+    def self.host_os
       case RbConfig::CONFIG["host_os"]
-      when /darwin/
-        %w[libpdfium.dylib pdfium]
-      when /mingw|mswin|cygwin/
-        %w[pdfium.dll pdfium]
-      else  # Linux, BSD, *nix in genere
-        %w[libpdfium.so pdfium]
+      when /darwin/         then :macos
+      when /linux/          then :linux
+      when /mswin|mingw|cygwin/ then :windows
       end
     end
 

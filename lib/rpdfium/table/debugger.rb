@@ -17,34 +17,30 @@ module Rpdfium
 
       def visualize(page, output_path, scale: 2.0, **table_opts)
         extractor = Extractor.new(page, **table_opts)
-        # Replichiamo gli edges come fa Extractor#find
-        h_edges, v_edges = extractor.send(:build_edges)
-        intersections = Edges.intersections(h_edges, v_edges,
-          x_tol: extractor.send(:instance_variable_get, :@inter_x) || 3.0,
-          y_tol: extractor.send(:instance_variable_get, :@inter_y) || 3.0)
-        tables = extractor.find
+        edges = extractor.edges
+        intersections = extractor.intersections
+        tables = extractor.tables
 
         w, h, bytes, _stride = page.render(scale: scale, output: :rgba)
         canvas = Canvas.new(w, h, bytes)
 
-        # Disegna edges
-        h_edges.each do |e|
-          canvas.line((e[:x0] * scale).to_i, (e[:y] * scale).to_i,
-                      (e[:x1] * scale).to_i, (e[:y] * scale).to_i, RED)
+        # Disegna edges. Nuovo formato: ogni edge ha orientation + x0/x1/top/bottom.
+        # Un edge orizzontale ha top == bottom; un verticale ha x0 == x1.
+        edges.each do |e|
+          canvas.line((e[:x0] * scale).to_i, (e[:top]    * scale).to_i,
+                       (e[:x1] * scale).to_i, (e[:bottom] * scale).to_i, RED)
         end
-        v_edges.each do |e|
-          canvas.line((e[:x] * scale).to_i, (e[:top] * scale).to_i,
-                      (e[:x] * scale).to_i, (e[:bottom] * scale).to_i, RED)
+
+        # Disegna intersezioni (cerchi 4px). Sono Hash con chiave [x, y].
+        intersections.each_key do |(x, y)|
+          canvas.dot((x * scale).to_i, (y * scale).to_i, GREEN, 4)
         end
-        # Disegna intersezioni (cerchi 4px)
-        intersections.each do |i|
-          canvas.dot((i[:x] * scale).to_i, (i[:y] * scale).to_i, GREEN, 4)
-        end
-        # Riempie tabelle con blu trasparente
+
+        # Riempie tabelle con blu trasparente. Table#bbox è tuple [x0, top, x1, bottom].
         tables.each do |t|
-          b = t[:bbox]
-          canvas.rect_fill((b[:x0] * scale).to_i, (b[:top] * scale).to_i,
-                           (b[:x1] * scale).to_i, (b[:bottom] * scale).to_i, BLUE)
+          x0, top, x1, bottom = t.bbox
+          canvas.rect_fill((x0 * scale).to_i, (top    * scale).to_i,
+                            (x1 * scale).to_i, (bottom * scale).to_i, BLUE)
         end
 
         Rpdfium::IO::PNG.write(output_path, w, h, canvas.bytes, stride: w * 4)

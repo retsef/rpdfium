@@ -2,222 +2,259 @@
 
 module Rpdfium
   module Table
-    # Estrattore di tabelle ispirato a pdfplumber.
+    # Trova tabelle su una pagina, fedele al `pdfplumber.TableFinder`.
     #
-    # STRATEGIE (settabili indipendentemente per asse vertical/horizontal):
-    #   :lines    — usa segmenti vettoriali della pagina
-    #   :text     — deduce edges dall'allineamento delle parole
-    #   :explicit — usa solo gli edges in `explicit_*` lines
-    #   :lines_strict — solo lines, senza fallback
+    # Pipeline:
+    #   1. raccogli edges candidati per ogni asse, secondo strategia
+    #      (`:lines` / `:lines_strict` / `:text` / `:explicit`)
+    #   2. merge_edges (snap collineari + join contigui)
+    #   3. filter per lunghezza minima
+    #   4. edges_to_intersections con tolerance
+    #   5. intersections_to_cells (smallest cell per ogni punto)
+    #   6. cells_to_tables (grouping per corner condivisi)
     #
-    # PIPELINE:
-    #   1. raccogli candidate edges (per ogni asse)
-    #   2. snap (collineari → stessa coord)
-    #   3. join (segmenti contigui sulla stessa retta → un solo segmento)
-    #   4. filter per lunghezza minima
-    #   5. trova intersezioni h × v entro tolleranza
-    #   6. costruisci celle (4 angoli presenti)
-    #   7. raggruppa celle adiacenti in tabelle
-    #   8. estrai testo da ogni cella via FPDFText_GetBoundedText
+    # API pubblica:
+    #   ext = Rpdfium::Table::Extractor.new(page, **opts)
+    #   ext.tables           # => [Table, ...]   (oggetti Rpdfium::Table::Table)
+    #   ext.extract          # => [[[String]]]   (Array di tabelle, ogni tabella
+    #                                              è Array di righe, ogni riga
+    #                                              è Array di stringhe)
+    #   ext.find             # alias di .tables (compat back con 0.2.x)
+    #   ext.edges            # edges raffinati
+    #   ext.intersections    # Hash {[x,y] => {v:[],h:[]}}
+    #   ext.cells            # Array<bbox>
     class Extractor
       DEFAULTS = {
         vertical_strategy:   :lines,
         horizontal_strategy: :lines,
-        explicit_vertical_lines:   [],   # Array<Numeric> (x coord) o Array<Hash>
+        explicit_vertical_lines:   [],
         explicit_horizontal_lines: [],
+
+        # Tolleranze. I `_x_` / `_y_` ereditano dal valore non-suffisso.
         snap_tolerance:           3.0,
-        snap_x_tolerance:         nil,   # eredita snap_tolerance se nil
+        snap_x_tolerance:         nil,
         snap_y_tolerance:         nil,
         join_tolerance:           3.0,
         join_x_tolerance:         nil,
         join_y_tolerance:         nil,
-        edge_min_length:          3.0,
-        min_words_vertical:       3,
-        min_words_horizontal:     1,
+
+        edge_min_length:           3.0,
+        edge_min_length_prefilter: 1.0,
+
+        min_words_vertical:   Edges::DEFAULT_MIN_WORDS_VERTICAL,
+        min_words_horizontal: Edges::DEFAULT_MIN_WORDS_HORIZONTAL,
+
         intersection_tolerance:   3.0,
         intersection_x_tolerance: nil,
         intersection_y_tolerance: nil,
-        text_tolerance:           3.0,
-        text_x_tolerance:         nil,
-        text_y_tolerance:         nil,
-        keep_blank_chars:         false,
-        # Auto-fallback: se :lines non produce nulla, riprova con :text
-        auto_fallback:            true
+
+        # Settings testo (passati a TextExtraction quando si chiama .extract).
+        # I default 3.0 sono quelli di pdfplumber.
+        text_x_tolerance: Util::WordExtractor::DEFAULT_X_TOLERANCE,
+        text_y_tolerance: Util::WordExtractor::DEFAULT_Y_TOLERANCE,
+        text_keep_blank_chars: false,
+
+        # Auto-fallback: se :lines non produce edges, riprova con :text.
+        # Manteniamo il flag (era già in 0.2.x) ma SOLO come fallback,
+        # mai come "fix" su layout patologici — coerente con pdfplumber che
+        # non lo ha (chi usa pdfplumber sa che deve scegliere la strategia).
+        auto_fallback: true
       }.freeze
+
+      VALID_STRATEGIES = %i[lines lines_strict text explicit].freeze
+
+      attr_reader :page, :settings
 
       def initialize(page, **opts)
         @page = page
-        @opts = DEFAULTS.merge(opts)
-        # Risolvi i tolerance a-cascata
-        @snap_x = @opts[:snap_x_tolerance] || @opts[:snap_tolerance]
-        @snap_y = @opts[:snap_y_tolerance] || @opts[:snap_tolerance]
-        @join_x = @opts[:join_x_tolerance] || @opts[:join_tolerance]
-        @join_y = @opts[:join_y_tolerance] || @opts[:join_tolerance]
-        @inter_x = @opts[:intersection_x_tolerance] || @opts[:intersection_tolerance]
-        @inter_y = @opts[:intersection_y_tolerance] || @opts[:intersection_tolerance]
-        @text_x  = @opts[:text_x_tolerance] || @opts[:text_tolerance]
-        @text_y  = @opts[:text_y_tolerance] || @opts[:text_tolerance]
+        @settings = resolve_settings(DEFAULTS.merge(opts))
+        validate_strategies!
       end
 
-      # Trova le tabelle ma NON estrae il testo. Utile per debug/visualizzazione.
-      def find
-        h_edges, v_edges = build_edges
-        return [] if h_edges.empty? && v_edges.empty? && !@opts[:auto_fallback]
-
-        if (h_edges.empty? || v_edges.empty?) && @opts[:auto_fallback]
-          # Fallback: prova text strategy se lines ha fallito
-          h_edges, v_edges = build_edges_with_strategy(:text, :text) \
-            if @opts[:vertical_strategy] != :text
+      # Pipeline completa, costruisce gli edges raffinati.
+      def edges
+        @edges ||= build_edges(@settings[:vertical_strategy],
+                               @settings[:horizontal_strategy]).then do |built|
+          if built.empty? && @settings[:auto_fallback] &&
+             (@settings[:vertical_strategy] != :text ||
+              @settings[:horizontal_strategy] != :text)
+            # Fallback: l'auto-fallback è LASCO, riprova tutto a :text.
+            build_edges(:text, :text)
+          else
+            built
+          end
         end
-
-        ints = Edges.intersections(h_edges, v_edges,
-                                    x_tol: @inter_x, y_tol: @inter_y)
-        cells = Cells.from_intersections(ints)
-        Cells.group_into_tables(cells)
       end
 
-      # Estrae direttamente i dati: Array<Array<Array<String>>>.
-      def extract
-        find.map { |table| extract_text_from_table(table) }
+      def intersections
+        @intersections ||= Edges.edges_to_intersections(
+          edges,
+          x_tolerance: @settings[:intersection_x_tolerance],
+          y_tolerance: @settings[:intersection_y_tolerance]
+        )
+      end
+
+      def cells
+        @cells ||= Cells.intersections_to_cells(intersections)
+      end
+
+      def tables
+        @tables ||= Cells.cells_to_tables(cells).map { |group| Table.new(@page, group) }
+      end
+      alias find tables
+
+      # Estrai i dati di tutte le tabelle: Array<Array<Array<String>>>.
+      def extract(**text_opts)
+        merged = {
+          x_tolerance: @settings[:text_x_tolerance],
+          y_tolerance: @settings[:text_y_tolerance],
+          keep_blank_chars: @settings[:text_keep_blank_chars]
+        }.merge(text_opts)
+
+        tables.map { |t| t.extract(**merged) }
       end
 
       private
 
-      def build_edges
-        build_edges_with_strategy(@opts[:vertical_strategy],
-                                   @opts[:horizontal_strategy])
+      def resolve_settings(s)
+        # Cascata x/y dai non-suffissi
+        s[:snap_x_tolerance] ||= s[:snap_tolerance]
+        s[:snap_y_tolerance] ||= s[:snap_tolerance]
+        s[:join_x_tolerance] ||= s[:join_tolerance]
+        s[:join_y_tolerance] ||= s[:join_tolerance]
+        s[:intersection_x_tolerance] ||= s[:intersection_tolerance]
+        s[:intersection_y_tolerance] ||= s[:intersection_tolerance]
+        s
       end
 
-      def build_edges_with_strategy(vertical_strategy, horizontal_strategy)
-        v_edges = vertical_edges(vertical_strategy) +
-                  explicit_vertical_edges
-        h_edges = horizontal_edges(horizontal_strategy) +
-                  explicit_horizontal_edges
-
-        h_norm = Edges.normalize_horizontal(h_edges,
-          snap_tol: @snap_y, join_tol: @join_x,
-          min_length: @opts[:edge_min_length])
-        v_norm = Edges.normalize_vertical(v_edges,
-          snap_tol: @snap_x, join_tol: @join_y,
-          min_length: @opts[:edge_min_length])
-
-        [h_norm, v_norm]
-      end
-
-      # ----- Sources di edges -----
-
-      def vertical_edges(strategy)
-        case strategy
-        when :lines, :lines_strict then @page.vertical_lines
-        when :text                 then text_vertical_edges
-        when :explicit             then []
-        else []
-        end
-      end
-
-      def horizontal_edges(strategy)
-        case strategy
-        when :lines, :lines_strict then @page.horizontal_lines
-        when :text                 then text_horizontal_edges
-        when :explicit             then []
-        else []
-        end
-      end
-
-      def explicit_vertical_edges
-        page_h = @page.height
-        @opts[:explicit_vertical_lines].map do |item|
-          case item
-          when Numeric
-            { x: item.to_f, top: 0.0, bottom: page_h }
-          when Hash
-            { x: item[:x], top: item.fetch(:top, 0.0),
-              bottom: item.fetch(:bottom, page_h) }
+      def validate_strategies!
+        %i[vertical_strategy horizontal_strategy].each do |k|
+          unless VALID_STRATEGIES.include?(@settings[k])
+            raise ArgumentError, "#{k} must be one of #{VALID_STRATEGIES}"
           end
-        end.compact
-      end
-
-      def explicit_horizontal_edges
-        page_w = @page.width
-        @opts[:explicit_horizontal_lines].map do |item|
-          case item
-          when Numeric
-            { y: item.to_f, x0: 0.0, x1: page_w }
-          when Hash
-            { y: item[:y], x0: item.fetch(:x0, 0.0),
-              x1: item.fetch(:x1, page_w) }
-          end
-        end.compact
-      end
-
-      # ----- Strategy :text -----
-      #
-      # L'idea: i confini di colonna sono dove molte parole iniziano alla
-      # stessa x. I confini di riga sono dove molte parole hanno la stessa
-      # top y. pdfplumber ha varianti più sofisticate (left/right/center),
-      # qui usiamo "left" che è il più solido.
-
-      def text_vertical_edges
-        words = @page.words(x_tolerance: @text_x, y_tolerance: @text_y)
-        return [] if words.empty?
-
-        # Cluster di word.x0 (start)
-        x_clusters = cluster_by(words.map { |w| w[:x0] }, @snap_x)
-        # Solo cluster che contengono >= min_words_vertical
-        page_h = @page.height
-        x_clusters.select { |c| c.size >= @opts[:min_words_vertical] }
-                  .map { |c| { x: c.sum / c.size.to_f, top: 0.0, bottom: page_h } }
-      end
-
-      def text_horizontal_edges
-        words = @page.words(x_tolerance: @text_x, y_tolerance: @text_y)
-        return [] if words.empty?
-
-        page_w = @page.width
-        y_clusters = cluster_by(words.map { |w| w[:top] }, @snap_y)
-        y_clusters.select { |c| c.size >= @opts[:min_words_horizontal] }
-                  .map { |c| { y: c.sum / c.size.to_f, x0: 0.0, x1: page_w } }
-      end
-
-      def cluster_by(values, tol)
-        return [] if values.empty?
-
-        sorted = values.sort
-        clusters = [[sorted.first]]
-        sorted[1..].each do |v|
-          if (v - clusters.last.last).abs <= tol
-            clusters.last << v
-          else
-            clusters << [v]
+          if @settings[k] == :explicit
+            list = @settings[:"explicit_#{k.to_s.split('_').first}_lines"]
+            if list.nil? || list.size < 2
+              raise ArgumentError, "Strategy :explicit on #{k} requires " \
+                                    "at least 2 explicit_*_lines"
+            end
           end
         end
-        clusters
       end
 
-      # ----- Estrazione testo da una cella -----
+      def build_edges(v_strat, h_strat)
+        words = nil
+        words = page_words if v_strat == :text || h_strat == :text
 
-      def extract_text_from_table(table)
-        table[:grid].map do |row|
-          row.map { |c| c.nil? ? "" : extract_cell_text(c) }
-        end
-      end
+        v_base = v_edges_for_strategy(v_strat, words)
+        h_base = h_edges_for_strategy(h_strat, words)
 
-      def extract_cell_text(cell)
-        # Niente padding: PDFium include i char il cui CENTRO cade dentro
-        # la bbox, quindi un char esattamente sul bordo non viene tagliato.
-        # Il padding di 0.5 era un over-engineering: causava taglio di
-        # glifi che toccavano il bordo della cella e PDFium reinseriva
-        # spazi sintetici per coprire i "buchi" risultanti.
-        raw = @page.text_in_bbox(
-          left:   cell[:x0],
-          right:  cell[:x1],
-          top:    cell[:top],
-          bottom: cell[:bottom]
+        v_explicit = explicit_v_edges
+        h_explicit = explicit_h_edges
+
+        all = v_base + v_explicit + h_base + h_explicit
+        merged = Edges.merge_edges(
+          all,
+          snap_x_tolerance: @settings[:snap_x_tolerance],
+          snap_y_tolerance: @settings[:snap_y_tolerance],
+          join_x_tolerance: @settings[:join_x_tolerance],
+          join_y_tolerance: @settings[:join_y_tolerance]
         )
-        # Normalizza whitespace interno: PDFium può inserire \r, \n, o
-        # multiple spazi tra char di una stessa parola se il layout è
-        # complesso (multi-line cell).
-        raw.gsub(/\s+/, " ").strip
+        Edges.filter_edges(merged, min_length: @settings[:edge_min_length])
+      end
+
+      def page_words
+        # Genera words usando il nostro WordExtractor (consistente con
+        # quello usato in Table#extract, così i thresholds combaciano).
+        chars = @page.chars
+        Util::WordExtractor.new(
+          x_tolerance: @settings[:text_x_tolerance],
+          y_tolerance: @settings[:text_y_tolerance],
+          keep_blank_chars: @settings[:text_keep_blank_chars]
+        ).extract_words(chars)
+      end
+
+      def v_edges_for_strategy(strat, words)
+        case strat
+        when :lines, :lines_strict
+          page_vertical_edges(strict: strat == :lines_strict)
+        when :text
+          Edges.words_to_edges_v(
+            words || [],
+            word_threshold: @settings[:min_words_vertical]
+          )
+        when :explicit
+          []
+        end
+      end
+
+      def h_edges_for_strategy(strat, words)
+        case strat
+        when :lines, :lines_strict
+          page_horizontal_edges(strict: strat == :lines_strict)
+        when :text
+          Edges.words_to_edges_h(
+            words || [],
+            word_threshold: @settings[:min_words_horizontal]
+          )
+        when :explicit
+          []
+        end
+      end
+
+      # Converte i `vertical_lines` di Page (formato {x, top, bottom}) al
+      # formato pdfplumber-style atteso dalle Edges.
+      # Nota: in 0.3.0 NON includiamo i lati di rettangoli quando :strict
+      # (ma al momento Page non li espone separatamente, è una semplificazione
+      # che documenteremo).
+      def page_vertical_edges(strict: false) # rubocop:disable Lint/UnusedMethodArgument
+        prefilter = @settings[:edge_min_length_prefilter]
+        @page.vertical_lines.filter_map do |s|
+          length = s[:bottom] - s[:top]
+          next if length < prefilter
+
+          { x0: s[:x], x1: s[:x], top: s[:top], bottom: s[:bottom],
+            orientation: "v" }
+        end
+      end
+
+      def page_horizontal_edges(strict: false) # rubocop:disable Lint/UnusedMethodArgument
+        prefilter = @settings[:edge_min_length_prefilter]
+        @page.horizontal_lines.filter_map do |s|
+          length = s[:x1] - s[:x0]
+          next if length < prefilter
+
+          { x0: s[:x0], x1: s[:x1], top: s[:y], bottom: s[:y],
+            orientation: "h" }
+        end
+      end
+
+      def explicit_v_edges
+        page_h = @page.height
+        @settings[:explicit_vertical_lines].map do |item|
+          x, top, bottom = case item
+                           when Numeric then [item.to_f, 0.0, page_h]
+                           when Hash
+                             [item[:x] || item.fetch("x"),
+                              item[:top]    || item["top"]    || 0.0,
+                              item[:bottom] || item["bottom"] || page_h]
+                           end
+          { x0: x, x1: x, top: top, bottom: bottom, orientation: "v" }
+        end
+      end
+
+      def explicit_h_edges
+        page_w = @page.width
+        @settings[:explicit_horizontal_lines].map do |item|
+          y, x0, x1 = case item
+                      when Numeric then [item.to_f, 0.0, page_w]
+                      when Hash
+                        [item[:y]  || item.fetch("y"),
+                         item[:x0] || item["x0"] || 0.0,
+                         item[:x1] || item["x1"] || page_w]
+                      end
+          { x0: x0, x1: x1, top: y, bottom: y, orientation: "h" }
+        end
       end
     end
   end

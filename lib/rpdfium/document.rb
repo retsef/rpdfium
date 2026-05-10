@@ -14,7 +14,7 @@ module Rpdfium
     META_KEYS = %w[Title Author Subject Keywords Creator Producer
                    CreationDate ModDate Trapped].freeze
 
-    attr_reader :handle, :source
+    attr_reader :source
 
     def self.open(input, password: nil, &block)
       doc = new(input, password: password)
@@ -39,30 +39,25 @@ module Rpdfium
 
         raise LoadError, "Failed to load PDF: #{msg}"
       end
-
-      # Stato condiviso tra istanza e finalizer. Lo wrappiamo in un Hash
-      # così la closure del finalizer e il metodo close vedono lo stesso
-      # mutable state — il finalizer non chiude un handle già chiuso.
+      # Stato condiviso tra istanza e finalizer. Wrappato in Hash mutabile
+      # perché la closure del finalizer e il close() esplicito devono vedere
+      # lo stesso :closed flag — altrimenti chi arriva secondo richiama
+      # FPDF_CloseDocument su un handle già liberato e PDFium segfaulta.
       @state = {
-        handle:        handle,
+        handle: handle,
         retain_buffer: retain_buffer,
-        closed:        false
+        closed: false
       }
       @form_env = nil
       @page_cache = {}
-
-      # ATTENZIONE: il finalizer NON deve chiudere altri Ruby objects
-      # (es. pages cached o form_env), perché potrebbero essere già stati
-      # finalizzati dal GC in ordine non deterministico. Il finalizer è
-      # un best-effort di ultima istanza: chiude SOLO l'handle nativo,
-      # e SOLO se il close esplicito non è già stato chiamato.
+      # IMPORTANTE: il finalizer cattura @state (Hash), NON self. Catturare
+      # self impedirebbe al GC di raccogliere il Document. Inoltre il
+      # finalizer NON tocca @page_cache: le Page hanno il loro finalizer
+      # individuale, e l'ordine di esecuzione tra finalizer è non
+      # deterministico in Ruby.
       ObjectSpace.define_finalizer(self, self.class.finalizer(@state))
     end
 
-    # IMPORTANTE: questa proc deve essere un *class method* o un
-    # `lambda` definito FUORI dall'instance scope. Se la chiusura cattura
-    # `self`, il GC non potrà MAI raccogliere il Document — definirebbe
-    # un riferimento permanente.
     def self.finalizer(state)
       proc do
         next if state[:closed]
@@ -70,9 +65,7 @@ module Rpdfium
 
         Raw.FPDF_CloseDocument(state[:handle])
         state[:closed] = true
-        # retain_buffer va tenuto vivo finché PDFium tiene il Document.
-        # Una volta chiuso, può essere rilasciato (ma è già nella state hash,
-        # quindi viene comunque liberato quando il finalizer esce).
+        state[:retain_buffer] = nil
       end
     end
 
@@ -84,7 +77,7 @@ module Rpdfium
 
     def page_count
       ensure_open!
-      Raw.FPDF_GetPageCount(handle)
+      Raw.FPDF_GetPageCount(@state[:handle])
     end
     alias size page_count
     alias length page_count
@@ -106,21 +99,21 @@ module Rpdfium
     end
 
     def page_label(index)
-      Raw.read_utf16_string(:FPDF_GetPageLabel, handle, index)
+      Raw.read_utf16_string(:FPDF_GetPageLabel, @state[:handle], index)
     end
 
     # ===== Metadata =====
 
     def metadata
       META_KEYS.each_with_object({}) do |key, h|
-        v = Raw.read_utf16_string(:FPDF_GetMetaText, handle, key)
+        v = Raw.read_utf16_string(:FPDF_GetMetaText, @state[:handle], key)
         h[key.downcase.to_sym] = v unless v.empty?
       end
     end
 
     def file_version
       buf = FFI::MemoryPointer.new(:int)
-      return nil if Raw.FPDF_GetFileVersion(handle, buf) == 0
+      return nil if Raw.FPDF_GetFileVersion(@state[:handle], buf) == 0
 
       v = buf.read_int
       # PDFium ritorna 14 → 1.4, 17 → 1.7
@@ -140,7 +133,7 @@ module Rpdfium
     }.freeze
 
     def permissions
-      bits = Raw.FPDF_GetDocPermissions(handle)
+      bits = Raw.FPDF_GetDocPermissions(@state[:handle])
       PERMISSIONS.transform_values { |mask| (bits & mask) == mask }
     end
 
@@ -154,7 +147,7 @@ module Rpdfium
     }.freeze
 
     def form_type
-      FORM_TYPES[Raw.FPDF_GetFormType(handle)] || :unknown
+      FORM_TYPES[Raw.FPDF_GetFormType(@state[:handle])] || :unknown
     end
 
     def has_forms?
@@ -177,29 +170,23 @@ module Rpdfium
     # ===== Attachments =====
 
     def attachments
-      n = Raw.FPDFDoc_GetAttachmentCount(handle)
+      n = Raw.FPDFDoc_GetAttachmentCount(@state[:handle])
       Array.new(n) { |i| Attachment.new(self, i) }
     end
 
     # ===== Close =====
 
     def close
-      return if closed?
+      return if @state[:closed]
 
-      # Ordine corretto: prima chiudi tutto ciò che dipende dal documento,
-      # poi il documento stesso. Questo è il path "manuale": la cascata
-      # è sotto il nostro controllo, non in mano al GC.
+      # Ordine: chiudi prima form env e pagine cached, poi documento.
       @form_env&.close
       @page_cache.each_value(&:close)
       @page_cache.clear
-
-      Raw.FPDF_CloseDocument(handle)
+      Raw.FPDF_CloseDocument(@state[:handle]) unless @state[:handle].null?
       @state[:handle] = FFI::Pointer::NULL
       @state[:retain_buffer] = nil
       @state[:closed] = true
-
-      # Disarma il finalizer: non c'è più nulla da chiudere, evitiamo
-      # qualsiasi possibilità di doppia chiamata via GC.
       ObjectSpace.undefine_finalizer(self)
     end
 
@@ -210,7 +197,7 @@ module Rpdfium
     private
 
     def ensure_open!
-      raise Error, "Document is closed" if closed?
+      raise Error, "Document is closed" if @state[:closed]
     end
 
     def load_handle(input, password)

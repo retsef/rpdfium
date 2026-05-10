@@ -2,115 +2,206 @@
 
 module Rpdfium
   module Table
-    # Utility per manipolare collezioni di "edges" (segmenti orizzontali o
-    # verticali). Algoritmi mutuati da pdfplumber/table.py.
+    # Operazioni su edges (segmenti orizzontali/verticali) usate dal
+    # TableFinder. Mappa diretta su `pdfplumber/table.py`.
     #
-    # Convenzioni interne:
-    # - edge orizzontale: { y:, x0:, x1:, ... } con x0 <= x1
-    # - edge verticale:   { x:, top:, bottom:, ... } con top <= bottom
+    # Convenzioni interne (allineate a pdfplumber):
+    #   - Ogni edge è un Hash con :orientation ("v" | "h"),
+    #     :x0, :x1, :top, :bottom (in coordinate top-down).
+    #   - Edge orizzontale: top == bottom, x0 < x1.
+    #   - Edge verticale:   x0 == x1, top < bottom.
     #
-    # `top` < `bottom` perché siamo in coordinate top-down (origine in alto).
+    # Le edges possono provenire da:
+    #   - linee vettoriali del PDF (path segments)
+    #   - rettangoli (decomposti in 4 lati)
+    #   - line "implicite" dedotte dall'allineamento di words (strategia :text)
+    #   - line specificate dall'utente (strategia :explicit)
     module Edges
       module_function
 
-      # Snap: edges quasi-collineari → stessa coordinata trasversale.
-      # Per orizzontali snappa la y, per verticali snappa la x.
-      def snap_horizontal(edges, tol)
-        snap_by(edges, :y, tol)
+      # Snap: cluster di edges quasi-collineari → coordinata media comune.
+      # Per orizzontali snappa la `top` (== `bottom`); per verticali la `x0`.
+      def snap_edges(edges, x_tolerance: 3.0, y_tolerance: 3.0)
+        v_edges, h_edges = edges.partition { |e| e[:orientation] == "v" }
+
+        snapped_v = Util::Cluster.cluster_objects(v_edges, :x0, tolerance: x_tolerance)
+                                 .flat_map { |g| move_to_avg(g, "v") }
+        snapped_h = Util::Cluster.cluster_objects(h_edges, :top, tolerance: y_tolerance)
+                                 .flat_map { |g| move_to_avg(g, "h") }
+        snapped_v + snapped_h
       end
 
-      def snap_vertical(edges, tol)
-        snap_by(edges, :x, tol)
+      def move_to_avg(cluster, orientation)
+        case orientation
+        when "h"
+          mean = cluster.sum { |e| e[:top] } / cluster.size.to_f
+          cluster.map { |e| e.merge(top: mean, bottom: mean) }
+        when "v"
+          mean = cluster.sum { |e| e[:x0] } / cluster.size.to_f
+          cluster.map { |e| e.merge(x0: mean, x1: mean) }
+        end
       end
 
-      def snap_by(edges, key, tol)
+      # Join: dato un gruppo di edges sulla stessa retta infinita (stessa top
+      # per orizzontali, stessa x0 per verticali), fonde quelli i cui estremi
+      # sono entro `tolerance`.
+      #
+      # Match esatto del comportamento di pdfplumber.join_edge_group: scorre
+      # sorted per minprop, estende il "current" se overlap/contiguità entro
+      # tolerance, altrimenti apre nuovo current.
+      def join_edge_group(edges, orientation, tolerance: 3.0)
         return [] if edges.empty?
 
-        sorted = edges.sort_by { |e| e[key] }
-        # Cluster per chiave entro tolleranza
-        clusters = [[sorted.first]]
+        min_prop, max_prop =
+          orientation == "h" ? [:x0, :x1] : [:top, :bottom]
+
+        sorted = edges.sort_by { |e| e[min_prop] }
+        joined = [sorted.first.dup]
         sorted[1..].each do |e|
-          if (e[key] - clusters.last.last[key]).abs <= tol
-            clusters.last << e
+          last = joined.last
+          if e[min_prop] <= last[max_prop] + tolerance
+            last[max_prop] = e[max_prop] if e[max_prop] > last[max_prop]
           else
-            clusters << [e]
+            joined << e.dup
           end
         end
-        clusters.flat_map do |cluster|
-          mean = cluster.sum { |e| e[key] } / cluster.size.to_f
-          cluster.map { |e| e.merge(key => mean) }
+        joined
+      end
+
+      # Pipeline completa: snap + join. Fedele a pdfplumber.merge_edges.
+      def merge_edges(edges,
+                      snap_x_tolerance: 3.0, snap_y_tolerance: 3.0,
+                      join_x_tolerance: 3.0, join_y_tolerance: 3.0)
+        if snap_x_tolerance.positive? || snap_y_tolerance.positive?
+          edges = snap_edges(edges,
+                              x_tolerance: snap_x_tolerance,
+                              y_tolerance: snap_y_tolerance)
+        end
+
+        # Raggruppa per (orientation, "valore della retta")
+        # h → top, v → x0
+        groups = edges.group_by do |e|
+          e[:orientation] == "h" ? ["h", e[:top]] : ["v", e[:x0]]
+        end
+        groups.flat_map do |(orient, _key), group|
+          tol = orient == "h" ? join_x_tolerance : join_y_tolerance
+          join_edge_group(group, orient, tolerance: tol)
         end
       end
 
-      # Join: edges collineari (stessa y/x) i cui estremi sono entro tolleranza
-      # vengono fusi in un edge unico.
-      def join_horizontal(edges, tol)
-        join_by(edges, :y, :x0, :x1, tol)
+      # Filtra edges troppo corti.
+      def filter_edges(edges, orientation: nil, min_length: 1.0)
+        edges.reject do |e|
+          next true if orientation && e[:orientation] != orientation
+
+          length = if e[:orientation] == "h"
+                     e[:x1] - e[:x0]
+                   else
+                     e[:bottom] - e[:top]
+                   end
+          length < min_length
+        end
       end
 
-      def join_vertical(edges, tol)
-        join_by(edges, :x, :top, :bottom, tol)
+      # ------------------------------------------------------------------
+      # words → edges (strategia :text)
+      # ------------------------------------------------------------------
+
+      DEFAULT_MIN_WORDS_VERTICAL = 3
+      DEFAULT_MIN_WORDS_HORIZONTAL = 1
+
+      # Per ogni cluster di word allineate "in alto" (stessa top, entro tol=1)
+      # con almeno `word_threshold` membri, emette DUE edges orizzontali (top
+      # e bottom della bbox di quel cluster). Avere il bottom oltre al top è
+      # critico: garantisce che l'ultima riga di ogni tabella abbia un edge
+      # orizzontale di chiusura.
+      def words_to_edges_h(words, word_threshold: DEFAULT_MIN_WORDS_HORIZONTAL)
+        by_top = Util::Cluster.cluster_objects(words, :top, tolerance: 1.0)
+        large = by_top.select { |g| g.size >= word_threshold }
+        rects = large.map { |g| Util::Cluster.objects_to_rect(g) }
+        return [] if rects.empty?
+
+        min_x0 = rects.map { |r| r[:x0] }.min
+        max_x1 = rects.map { |r| r[:x1] }.max
+
+        rects.flat_map do |r|
+          [
+            { x0: min_x0, x1: max_x1, top: r[:top],    bottom: r[:top],    orientation: "h" },
+            { x0: min_x0, x1: max_x1, top: r[:bottom], bottom: r[:bottom], orientation: "h" }
+          ]
+        end
       end
 
-      def join_by(edges, axis_key, lo_key, hi_key, tol)
-        # Raggruppa per axis (assunto già snappato)
-        by_axis = edges.group_by { |e| e[axis_key] }
-        result = []
-        by_axis.each do |_axis, group|
-          # Ordina per lo_key e fondi sovrapposti/contigui
-          sorted = group.sort_by { |e| e[lo_key] }
-          current = sorted.first.dup
-          sorted[1..].each do |e|
-            if e[lo_key] <= current[hi_key] + tol
-              current[hi_key] = [current[hi_key], e[hi_key]].max
-            else
-              result << current
-              current = e.dup
-            end
+      # Tre cluster di word per x: x0, x1, centerpoint. Cluster con almeno
+      # `word_threshold` membri sono candidati colonna. Le bbox di ciascun
+      # cluster vengono "condensate": se una bbox si sovrappone a un'altra
+      # già selezionata (più popolata), viene scartata.
+      #
+      # Per ogni bbox condensata emetto un edge verticale al suo x0 (left
+      # della colonna). In aggiunta, emetto un edge "right" finale al max
+      # x1 di tutte le bbox: chiude visivamente la tabella sulla destra.
+      def words_to_edges_v(words, word_threshold: DEFAULT_MIN_WORDS_VERTICAL)
+        by_x0 = Util::Cluster.cluster_objects(words, :x0, tolerance: 1.0)
+        by_x1 = Util::Cluster.cluster_objects(words, :x1, tolerance: 1.0)
+        center_fn = ->(w) { (w[:x0] + w[:x1]) / 2.0 }
+        by_center = Util::Cluster.cluster_objects(words, center_fn, tolerance: 1.0)
+
+        clusters = by_x0 + by_x1 + by_center
+        # Più popolati prima
+        sorted = clusters.sort_by { |c| -c.size }
+        large = sorted.select { |c| c.size >= word_threshold }
+        bboxes = large.map { |c| Util::Cluster.objects_to_bbox(c) }
+
+        condensed_bboxes = []
+        bboxes.each do |b|
+          overlap = condensed_bboxes.any? { |c| Util::Cluster.bbox_overlaps?(b, c) }
+          condensed_bboxes << b unless overlap
+        end
+        return [] if condensed_bboxes.empty?
+
+        # Sort left-to-right per emettere edges in ordine geometrico.
+        condensed_rects = condensed_bboxes.map do |b|
+          { x0: b[0], top: b[1], x1: b[2], bottom: b[3] }
+        end.sort_by { |r| r[:x0] }
+
+        max_x1 = condensed_rects.map { |r| r[:x1] }.max
+        min_top = condensed_rects.map { |r| r[:top] }.min
+        max_bottom = condensed_rects.map { |r| r[:bottom] }.max
+
+        # Edge "left" di ogni colonna + un edge finale "right".
+        left_edges = condensed_rects.map do |r|
+          { x0: r[:x0], x1: r[:x0], top: min_top, bottom: max_bottom, orientation: "v" }
+        end
+        right_edge = { x0: max_x1, x1: max_x1, top: min_top, bottom: max_bottom, orientation: "v" }
+        left_edges + [right_edge]
+      end
+
+      # ------------------------------------------------------------------
+      # intersezioni edges
+      # ------------------------------------------------------------------
+
+      # Per ogni coppia (h, v) che si interseca entro tolerance, registra
+      # un'intersezione `(v.x0, h.top)` con i puntatori agli edge sorgenti.
+      # Il valore in `intersections[(x, y)] = { v: [...], h: [...] }` permette
+      # poi al cell-builder di verificare "edge connect".
+      def edges_to_intersections(edges, x_tolerance: 1.0, y_tolerance: 1.0)
+        v_edges, h_edges = edges.partition { |e| e[:orientation] == "v" }
+        intersections = {}
+
+        v_edges.sort_by { |v| [v[:x0], v[:top]] }.each do |v|
+          h_edges.sort_by { |h| [h[:top], h[:x0]] }.each do |h|
+            next unless v[:top]    <= h[:top] + y_tolerance
+            next unless v[:bottom] >= h[:top] - y_tolerance
+            next unless v[:x0]     >= h[:x0]  - x_tolerance
+            next unless v[:x0]     <= h[:x1]  + x_tolerance
+
+            key = [v[:x0], h[:top]]
+            entry = intersections[key] ||= { v: [], h: [] }
+            entry[:v] << v
+            entry[:h] << h
           end
-          result << current
         end
-        result
-      end
-
-      # Filter: rimuovi edges troppo corti (rumore: piccoli underline,
-      # punti di tab leader, separatori di paragrafo).
-      def filter_short_horizontal(edges, min_length)
-        edges.reject { |e| (e[:x1] - e[:x0]) < min_length }
-      end
-
-      def filter_short_vertical(edges, min_length)
-        edges.reject { |e| (e[:bottom] - e[:top]) < min_length }
-      end
-
-      # Pipeline standard: snap → join → filter
-      def normalize_horizontal(edges, snap_tol:, join_tol:, min_length:)
-        e = snap_horizontal(edges, snap_tol)
-        e = join_horizontal(e, join_tol)
-        filter_short_horizontal(e, min_length)
-      end
-
-      def normalize_vertical(edges, snap_tol:, join_tol:, min_length:)
-        e = snap_vertical(edges, snap_tol)
-        e = join_vertical(e, join_tol)
-        filter_short_vertical(e, min_length)
-      end
-
-      # Intersezioni tra edges H e V. Un'intersezione esiste quando:
-      #   abs(h.y - in_range(v.top..v.bottom)) <= tol  AND
-      #   abs(v.x - in_range(h.x0..h.x1)) <= tol
-      # Ritorna: { x:, y:, h: <horizontal_edge>, v: <vertical_edge> }
-      def intersections(h_edges, v_edges, x_tol:, y_tol:)
-        out = []
-        h_edges.each do |h|
-          v_edges.each do |v|
-            next unless v[:x].between?(h[:x0] - x_tol, h[:x1] + x_tol)
-            next unless h[:y].between?(v[:top] - y_tol, v[:bottom] + y_tol)
-
-            out << { x: v[:x], y: h[:y], h: h, v: v }
-          end
-        end
-        out
+        intersections
       end
     end
   end

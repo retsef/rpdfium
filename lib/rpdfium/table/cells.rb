@@ -2,122 +2,137 @@
 
 module Rpdfium
   module Table
-    # Costruisce celle e tabelle dalle intersezioni di edges.
-    # Algoritmo:
-    #   1. Indicizza intersezioni in una griglia (x_set, y_set sorted).
-    #   2. Per ogni coppia (xi, xi+1) × (yj, yj+1) controlla se TUTTI E 4
-    #      gli angoli hanno un'intersezione → cella valida.
-    #   3. Aggrega celle adiacenti (condividono un edge) in tabelle.
+    # Costruisce celle da intersezioni e tabelle da celle.
+    # Algoritmi 1:1 con pdfplumber.intersections_to_cells e
+    # pdfplumber.cells_to_tables.
     module Cells
       module_function
 
-      def from_intersections(intersections)
+      # Ricerca della "smallest cell" per ogni intersezione: dato un punto
+      # `pt = (x, y)`, cerca il rettangolo minimo i cui 4 corner sono
+      # intersezioni e i cui 4 lati hanno edge che le connettono.
+      #
+      # Il vincolo "edge connect" è cruciale: due intersezioni con stessa
+      # x non bastano — devono CONDIVIDERE almeno un edge verticale (cioè
+      # appartenere a uno stesso segmento continuo). Idem orizzontale.
+      # Questo evita falsi positivi tipo "due colonne lontane allineate
+      # accidentalmente".
+      #
+      # `intersections` è il Hash prodotto da Edges.edges_to_intersections,
+      # con chiavi `[x, y]` e valori `{ v: [edges...], h: [edges...] }`.
+      def intersections_to_cells(intersections)
         return [] if intersections.empty?
 
-        # Set ordinati delle x e y di intersezione
-        xs = intersections.map { |i| i[:x] }.uniq.sort
-        ys = intersections.map { |i| i[:y] }.uniq.sort
-
-        # Lookup veloce
-        present = intersections.each_with_object({}) do |i, h|
-          h[[i[:x], i[:y]]] = true
+        # Indici di adiacenza: per ogni edge (oggetto Hash, identità di
+        # ruby), quali intersection points contiene? Pdfplumber lo fa
+        # confrontando bbox degli edge — noi abbiamo accesso diretto agli
+        # oggetti edge dentro `intersections[pt]`, basta usare l'identity.
+        # Per "stesso edge" usiamo `equal?` (identità d'oggetto).
+        edge_connects = lambda do |p1, p2|
+          if p1[0] == p2[0]
+            # Stessa x: cerco un edge verticale comune
+            v1 = intersections[p1][:v]
+            v2 = intersections[p2][:v]
+            return v1.any? { |e1| v2.any? { |e2| e1.equal?(e2) } }
+          end
+          if p1[1] == p2[1]
+            h1 = intersections[p1][:h]
+            h2 = intersections[p2][:h]
+            return h1.any? { |e1| h2.any? { |e2| e1.equal?(e2) } }
+          end
+          false
         end
 
-        cells = []
-        xs.each_cons(2) do |x_left, x_right|
-          ys.each_cons(2) do |y_top, y_bot|
-            # Tutti e 4 gli angoli devono esistere
-            corners = [
-              [x_left, y_top], [x_right, y_top],
-              [x_left, y_bot], [x_right, y_bot]
-            ]
-            next unless corners.all? { |k| present[k] }
+        points = intersections.keys.sort
+        npoints = points.size
 
-            cells << {
-              x0: x_left, x1: x_right,
-              top: y_top,  bottom: y_bot
-            }
+        cells = []
+        points.each_with_index do |pt, i|
+          next if i == npoints - 1
+
+          rest = points[(i + 1)..]
+          # Punti direttamente sotto `pt` (stessa x, y maggiore)
+          below = rest.select { |q| q[0] == pt[0] }
+          # Punti direttamente a destra di `pt` (stessa y, x maggiore)
+          right = rest.select { |q| q[1] == pt[1] }
+
+          # Cerca il PRIMO (== più piccolo per via dell'ordinamento) bottom-right
+          # i cui 4 corner sono presenti e gli edge connettono.
+          found = nil
+          below.each do |b|
+            next unless edge_connects.call(pt, b)
+
+            right.each do |r|
+              next unless edge_connects.call(pt, r)
+
+              br = [r[0], b[1]]
+              next unless intersections.key?(br)
+              next unless edge_connects.call(br, r)
+              next unless edge_connects.call(br, b)
+
+              found = [pt[0], pt[1], br[0], br[1]]
+              break
+            end
+            break if found
           end
+          cells << found if found
         end
         cells
       end
 
-      # Aggrega celle in tabelle. Due celle sono "adiacenti" se condividono
-      # uno spigolo. Usa union-find per raggruppare i componenti connessi.
-      def group_into_tables(cells)
+      # Raggruppa celle in tabelle in base ai corner condivisi.
+      # Algoritmo (greedy fixed-point, 1:1 con pdfplumber.cells_to_tables):
+      #   - Inizia un gruppo con la prima cella rimanente; aggiunge tutti i suoi corner.
+      #   - Itera tutte le altre celle: se ne condivide ALMENO UN corner con
+      #     i corner del gruppo corrente, la inserisce e ne aggiunge i corner.
+      #   - Se in un'iterazione non aggiunge nessuna cella nuova, chiude il
+      #     gruppo e ne apre uno nuovo dalla prima cella rimasta.
+      #   - Continua finché ci sono celle.
+      # Filtro finale: scarta tabelle con UNA SOLA cella (rumore).
+      def cells_to_tables(cells)
         return [] if cells.empty?
 
-        parent = (0...cells.size).to_a
-        find = lambda do |i|
-          i = parent[i] while parent[i] != i
-          i
-        end
-        union = lambda do |a, b|
-          ra = find.call(a); rb = find.call(b)
-          parent[ra] = rb if ra != rb
+        bbox_to_corners = lambda do |bbox|
+          x0, top, x1, bottom = bbox
+          [[x0, top], [x0, bottom], [x1, top], [x1, bottom]]
         end
 
-        cells.each_with_index do |c1, i|
-          cells.each_with_index do |c2, j|
-            next if i >= j
-            union.call(i, j) if adjacent?(c1, c2)
-          end
-        end
+        remaining = cells.dup
+        tables = []
+        current_corners = []
+        current_cells = []
 
-        groups = Hash.new { |h, k| h[k] = [] }
-        cells.each_with_index { |c, i| groups[find.call(i)] << c }
+        until remaining.empty?
+          initial_count = current_cells.size
+          remaining.dup.each do |cell|
+            corners = bbox_to_corners.call(cell)
+            if current_cells.empty?
+              current_corners.concat(corners)
+              current_cells << cell
+              remaining.delete(cell)
+            else
+              shared = corners.count { |c| current_corners.include?(c) }
+              next unless shared.positive?
 
-        groups.values.map { |g| build_table(g) }
-              .reject { |t| t[:rows] < 2 || t[:cols] < 2 }
-      end
-
-      EPS = 0.5
-
-      def adjacent?(a, b)
-        # Condividono lato verticale (a a destra di b o viceversa, y overlapping)
-        share_v = (close?(a[:x0], b[:x1]) || close?(a[:x1], b[:x0])) &&
-                  ranges_overlap(a[:top], a[:bottom], b[:top], b[:bottom])
-        # Condividono lato orizzontale
-        share_h = (close?(a[:top], b[:bottom]) || close?(a[:bottom], b[:top])) &&
-                  ranges_overlap(a[:x0], a[:x1], b[:x0], b[:x1])
-        share_v || share_h
-      end
-
-      def close?(a, b); (a - b).abs < EPS; end
-
-      def ranges_overlap(a0, a1, b0, b1)
-        a0 < b1 - EPS && b0 < a1 - EPS
-      end
-
-      # Da gruppo di celle → tabella strutturata (righe × colonne).
-      def build_table(cells)
-        xs = cells.flat_map { |c| [c[:x0], c[:x1]] }.uniq.sort
-        ys = cells.flat_map { |c| [c[:top], c[:bottom]] }.uniq.sort
-        n_cols = xs.size - 1
-        n_rows = ys.size - 1
-
-        # Mappa indice cella in (row, col)
-        grid = Array.new(n_rows) { Array.new(n_cols) }
-        cells.each do |c|
-          row = ys.index(c[:top])
-          col = xs.index(c[:x0])
-          # In tabelle "ben formate", larghezza in colonne e altezza in righe
-          col_span = xs.index(c[:x1]) - col
-          row_span = ys.index(c[:bottom]) - row
-          row_span.times do |dr|
-            col_span.times do |dc|
-              grid[row + dr][col + dc] = c
+              current_corners.concat(corners)
+              current_cells << cell
+              remaining.delete(cell)
             end
           end
-        end
 
-        {
-          rows: n_rows, cols: n_cols,
-          x_edges: xs, y_edges: ys,
-          grid: grid,
-          bbox: { x0: xs.first, x1: xs.last,
-                  top: ys.first, bottom: ys.last }
-        }
+          # Se non abbiamo aggiunto nulla in questa iterazione, chiudiamo il gruppo
+          if current_cells.size == initial_count
+            tables << current_cells.dup
+            current_cells.clear
+            current_corners.clear
+          end
+        end
+        tables << current_cells unless current_cells.empty?
+
+        # Sort top-to-bottom, left-to-right; filtra single-cell.
+        tables
+          .sort_by { |t| t.map { |c| [c[1], c[0]] }.min }
+          .reject { |t| t.size <= 1 }
       end
     end
   end

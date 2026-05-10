@@ -3,6 +3,122 @@
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [0.3.0] - estrazione tabelle riallineata 1:1 a pdfplumber
+
+### Riscritto da zero
+
+L'intero pipeline tabellare è stato riscritto seguendo il sorgente di
+[pdfplumber/table.py](https://github.com/jsvine/pdfplumber/blob/stable/pdfplumber/table.py)
+e [pdfplumber/utils/text.py](https://github.com/jsvine/pdfplumber/blob/stable/pdfplumber/utils/text.py).
+La versione 0.2.x aveva una serie di approssimazioni che producevano errori
+sistematici di estrazione su PDF con layout free-form (es. cedolini
+TeamSystem). I bug fix specifici:
+
+1. **`words_to_edges_v` clusterizza ora tre coordinate (`x0`, `x1`, centro)**
+   invece di solo `x0`. Le colonne numeriche right-aligned (importi
+   `1.234,56` allineati a destra) erano invisibili al clustering basato su
+   `x0`. Aggiunta dedupe per overlap di bbox: cluster sovrapposti tengono
+   solo il più popolato.
+
+2. **`words_to_edges_h` emette DUE edges per riga** (top + bottom della
+   bbox del cluster). Senza il bottom edge, l'ultima riga di una tabella
+   rilevata da text-strategy non veniva mai chiusa.
+
+3. **`intersections_to_cells` usa l'algoritmo `find_smallest_cell`** di
+   pdfplumber con verifica `edge_connect` su identità d'oggetto degli
+   edge, non su sole coordinate. Due intersezioni con la stessa `x` ma
+   appartenenti a edge verticali distinti non producono più cella spuria.
+
+4. **`cells_to_tables` usa il fixed-point su corner condivisi**, non più
+   adjacency check coordinate-based. Filtro single-cell per scartare rumore.
+
+5. **Estrazione testo da cella usa midpoint del char**, non bbox-clip via
+   `FPDFText_GetBoundedText`. Il midpoint è il criterio identico di
+   pdfplumber, e risolve la concatenazione cross-cell ("RETRIBUZIONEUTILE")
+   che si verificava su PDF dove i char di celle adiacenti hanno bbox
+   leggermente sovrapposti.
+
+### Aggiunto
+
+- **`Rpdfium::Util::Cluster`** (nuovo modulo): primitive di clustering 1D
+  agglomerativo single-linkage usate da tutto il pipeline (`cluster_list`,
+  `cluster_objects`, `objects_to_bbox`, `bbox_overlap`).
+
+- **`Rpdfium::Util::WordExtractor`** (nuova classe): estrazione words da
+  char fedele a `pdfplumber.WordExtractor`. Supporta `x_tolerance`,
+  `y_tolerance`, `keep_blank_chars`, `extra_attrs` (split su cambio
+  font/size).
+
+- **`Rpdfium::Util::TextExtraction.extract_text`** (nuovo modulo): converte
+  un Array di char in stringa, raggruppando per riga via clustering del
+  `top` e per parola via gap orizzontale > x_tolerance. Equivalente a
+  `pdfplumber.utils.text.extract_text(layout=False)`.
+
+- **`Rpdfium::Table::Table`** (nuova classe): rappresenta una tabella
+  estratta. Espone `.cells`, `.rows`, `.columns`, `.bbox`, `.extract`.
+  L'API combacia con `pdfplumber.table.Table`.
+
+- **`edge_min_length_prefilter`** (default 1.0): filtra edges troppo corti
+  prima dello snap+join, per ridurre rumore da micro-segmenti vettoriali.
+
+- **`Rpdfium.extract_tables(..., keep_blank_rows: false)`** filtra di
+  default le righe completamente vuote che la strategia `:text` produce
+  per costruzione (effetto del doppio edge top+bottom).
+
+### API: breaking changes minori
+
+- Le strategy del `Extractor` validano l'input: `vertical_strategy` e
+  `horizontal_strategy` accettano solo `:lines` / `:lines_strict` /
+  `:text` / `:explicit`. Valori invalidi alzano `ArgumentError`.
+
+- L'oggetto restituito da `Extractor#tables` (e dall'alias `find`) non è
+  più un Hash con `:bbox`/`:rows`/`:cols`/`:grid`, ma un'istanza di
+  `Rpdfium::Table::Table`. Chi usa `Rpdfium.extract_tables` (top-level)
+  vede solo strutture base (Hash con `:page` e `:rows`), invariato.
+
+- `Edges.snap_horizontal` / `Edges.snap_vertical` / `Edges.join_horizontal`
+  / `Edges.join_vertical` / `Edges.intersections` (firma vecchia) /
+  `Cells.from_intersections` / `Cells.group_into_tables` rimossi. I
+  rimpiazzi sono `snap_edges`, `join_edge_group`, `merge_edges`,
+  `filter_edges`, `edges_to_intersections`, `intersections_to_cells`,
+  `cells_to_tables` con segnature 1:1 da pdfplumber.
+
+### Fix lifecycle (race finalizer)
+
+Document/Page/TextPage/Annotation/Search/Form::Environment usano ora un
+**state Hash condiviso tra istanza e finalizer**. Tre proprietà
+acquisite:
+
+- **Idempotenza** (`@state[:closed]` flag): nessuna doppia chiamata a
+  `FPDF_CloseDocument`/`FPDF_ClosePage`/etc anche se sia `close()`
+  esplicito che il GC partono.
+- **No-leak della closure**: il finalizer cattura un Hash, non `self`.
+  L'istanza può essere raccolta liberamente dal GC.
+- **Disarmo esplicito**: `close()` chiama `ObjectSpace.undefine_finalizer`
+  per impedire qualsiasi esecuzione tardiva del finalizer su un handle
+  già liberato.
+
+Risolve il segfault `FPDF_CloseDocument` durante introspezione del
+debugger su una collection di tabelle (riportato dall'utente con
+ruby-debug-ide).
+
+### Fix `candidate_paths` (FFI)
+
+Su macOS, FFI auto-appendeva `.dylib` a path `.so`, causando il fallimento
+del caricamento. Ora `candidate_paths` filtra i nomi di sistema per OS
+host: solo `.dylib` su macOS, solo `.so` su Linux, solo `.dll` su Windows.
+Inoltre se `ENV["PDFIUM_LIBRARY_PATH"]` o `Rpdfium::Binary.library_path`
+è impostato, viene usato come unico path: nessun fallback automatico.
+
+### Test
+
+- 30 unit test (60 asserzioni) coprono cluster primitives, word
+  extraction, edges (snap/join/filter/intersections/words_to_edges_v/h),
+  cells (smallest-cell + edge identity check), table (rows/columns/bbox/
+  extract con midpoint), extractor end-to-end con FakePage, regressione
+  TeamSystem (no più cross-cell concatenation; words_to_edges_v sui dati
+  reali di un cedolino).
+
 ## [0.2.1] - allineamento PDFium chromium/6611+
 
 ### Cambiato
