@@ -138,7 +138,7 @@ module Rpdfium
     # baseline. Con `loose: false` si ottengono le bbox "tight" del singolo
     # glifo, utili per misure di layout fine ma sbagliate per il filtro
     # cella tabellare.
-    def chars(loose: true, inject_spaces: false)
+    def chars(loose: true, inject_spaces: true)
       # Cache: chars() viene chiamato una volta da Table#extract e poi
       # nuovamente da WordExtractor (passando per Extractor#page_words se
       # vertical/horizontal_strategy è :text). Ogni chiamata costa O(n) FFI
