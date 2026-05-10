@@ -264,67 +264,137 @@ module Rpdfium
     # Per le tabelle interessano principalmente i segmenti orizzontali e
     # verticali "puri". Beziers e segmenti obliqui vengono ignorati di default
     # (passa `include_curves: true` per averli come bbox dei loro punti).
+    #
+    # Discende ricorsivamente nei Form XObjects applicando la loro matrice
+    # di trasformazione. Molti PDF (TeamSystem, Zucchetti, template Excel)
+    # incapsulano l'intera pagina in un Form XObject — senza discesa, qui
+    # vedremmo zero linee anche se visivamente la pagina è piena di
+    # bordi/separatori. Comportamento allineato a pdfminer.six (e quindi a
+    # pdfplumber).
     def line_segments(include_curves: false)
-      n = Raw.FPDFPage_CountObjects(@state[:handle])
-      h = height
       out = []
-
-      n.times do |i|
-        obj = Raw.FPDFPage_GetObject(@state[:handle], i)
-        next if obj.null?
-        next unless Raw.FPDFPageObj_GetType(obj) == Raw::PAGEOBJ_PATH
-
-        stroke_width = read_stroke_width(obj)
-        # Iteriamo i segmenti accumulando current_point (PDF è state machine)
-        seg_count = Raw.FPDFPath_CountSegments(obj)
-        current = nil
-        first_in_subpath = nil
-
-        seg_count.times do |si|
-          seg = Raw.FPDFPath_GetPathSegment(obj, si)
-          next if seg.null?
-
-          x_buf = FFI::MemoryPointer.new(:float)
-          y_buf = FFI::MemoryPointer.new(:float)
-          Raw.FPDFPathSegment_GetPoint(seg, x_buf, y_buf)
-          x = x_buf.read_float
-          y = y_buf.read_float
-          type = Raw.FPDFPathSegment_GetType(seg)
-          closes = Raw.FPDFPathSegment_GetClose(seg) == 1
-
-          case type
-          when Raw::SEGMENT_MOVETO
-            current = [x, y]
-            first_in_subpath = current.dup
-          when Raw::SEGMENT_LINETO
-            if current
-              out << build_segment(current[0], current[1], x, y, h, stroke_width)
-            end
-            current = [x, y]
-          when Raw::SEGMENT_BEZIERTO
-            # Bezier: tre punti consecutivi (control1, control2, end). PDFium
-            # ritorna ogni segmento con coords del SUO endpoint, non dei
-            # control points — quindi tre BEZIERTO consecutivi sono il
-            # comando completo. Per i nostri scopi (linee tabella) interessa
-            # solo il punto finale.
-            if include_curves && current
-              out << build_segment(current[0], current[1], x, y, h, stroke_width).merge(curve: true)
-            end
-            current = [x, y]
-          end
-
-          # PDF "closepath": linea da current → first_in_subpath
-          if closes && current && first_in_subpath
-            out << build_segment(current[0], current[1],
-                                  first_in_subpath[0], first_in_subpath[1],
-                                  h, stroke_width)
-            current = first_in_subpath.dup
-          end
-        end
-      end
-
+      collect_line_segments(@state[:handle], identity_matrix, height,
+                             include_curves, out, page_object: false)
       out
     end
+
+    private
+
+    # Matrice identità nello spazio PDF: [1, 0, 0, 1, 0, 0]
+    # (a, b, c, d, e, f) → (x', y') = (a*x + c*y + e,  b*x + d*y + f)
+    def identity_matrix
+      { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: 0.0, f: 0.0 }
+    end
+
+    # Compone due trasformazioni affini PDF: applica `child` PRIMA di `parent`
+    # nello spazio PDF (notazione pdfminer.six "apply_matrix_norm").
+    # Equivale a: result = parent * child  (col-major).
+    def compose_matrix(parent, child)
+      {
+        a: parent[:a] * child[:a] + parent[:c] * child[:b],
+        b: parent[:b] * child[:a] + parent[:d] * child[:b],
+        c: parent[:a] * child[:c] + parent[:c] * child[:d],
+        d: parent[:b] * child[:c] + parent[:d] * child[:d],
+        e: parent[:a] * child[:e] + parent[:c] * child[:f] + parent[:e],
+        f: parent[:b] * child[:e] + parent[:d] * child[:f] + parent[:f]
+      }
+    end
+
+    def apply_matrix(m, x, y)
+      [m[:a] * x + m[:c] * y + m[:e],
+       m[:b] * x + m[:d] * y + m[:f]]
+    end
+
+    def read_object_matrix(obj)
+      mat = Raw::FS_MATRIX.new
+      return identity_matrix if Raw.FPDFPageObj_GetMatrix(obj, mat) == 0
+
+      { a: mat[:a], b: mat[:b], c: mat[:c], d: mat[:d],
+        e: mat[:e], f: mat[:f] }
+    end
+
+    # Itera oggetti di una page o di un Form XObject, applicando ricorsivamente
+    # la matrice di trasformazione. `parent` = handle (FPDF_PAGE alla radice o
+    # FPDF_PAGEOBJECT per i form xobjects). `page_object: true` se parent è un
+    # form xobject.
+    def collect_line_segments(parent, ctm, page_h, include_curves, out, page_object:)
+      n = if page_object
+            Raw.FPDFFormObj_CountObjects(parent)
+          else
+            Raw.FPDFPage_CountObjects(parent)
+          end
+
+      n.times do |i|
+        obj = if page_object
+                Raw.FPDFFormObj_GetObject(parent, i)
+              else
+                Raw.FPDFPage_GetObject(parent, i)
+              end
+        next if obj.null?
+
+        type = Raw.FPDFPageObj_GetType(obj)
+        case type
+        when Raw::PAGEOBJ_PATH
+          extract_path_segments(obj, ctm, page_h, include_curves, out)
+        when Raw::PAGEOBJ_FORM
+          # Discendi nel form xobject componendo la sua matrice col CTM
+          child_ctm = compose_matrix(ctm, read_object_matrix(obj))
+          collect_line_segments(obj, child_ctm, page_h, include_curves, out,
+                                page_object: true)
+        end
+      end
+    end
+
+    def extract_path_segments(obj, ctm, page_h, include_curves, out)
+      stroke_width = read_stroke_width(obj)
+      # Comporre la matrice del path object stesso col CTM corrente.
+      # I path objects HANNO una propria matrice (oltre a quella del
+      # form parent), che pdfium applica automaticamente al rendering.
+      path_ctm = compose_matrix(ctm, read_object_matrix(obj))
+
+      seg_count = Raw.FPDFPath_CountSegments(obj)
+      current = nil
+      first_in_subpath = nil
+
+      seg_count.times do |si|
+        seg = Raw.FPDFPath_GetPathSegment(obj, si)
+        next if seg.null?
+
+        x_buf = FFI::MemoryPointer.new(:float)
+        y_buf = FFI::MemoryPointer.new(:float)
+        Raw.FPDFPathSegment_GetPoint(seg, x_buf, y_buf)
+        # Coordinate nello spazio "del path", da trasformare al sistema-pagina
+        local_x = x_buf.read_float
+        local_y = y_buf.read_float
+        x, y = apply_matrix(path_ctm, local_x, local_y)
+        type = Raw.FPDFPathSegment_GetType(seg)
+        closes = Raw.FPDFPathSegment_GetClose(seg) == 1
+
+        case type
+        when Raw::SEGMENT_MOVETO
+          current = [x, y]
+          first_in_subpath = current.dup
+        when Raw::SEGMENT_LINETO
+          out << build_segment(current[0], current[1], x, y, page_h, stroke_width) if current
+          current = [x, y]
+        when Raw::SEGMENT_BEZIERTO
+          if include_curves && current
+            out << build_segment(current[0], current[1], x, y, page_h, stroke_width)
+                    .merge(curve: true)
+          end
+          current = [x, y]
+        end
+
+        if closes && current && first_in_subpath
+          out << build_segment(current[0], current[1],
+                                first_in_subpath[0], first_in_subpath[1],
+                                page_h, stroke_width)
+          current = first_in_subpath.dup
+        end
+      end
+    end
+
+    public
 
     # Linee orizzontali: dy ~ 0 entro tolleranza
     def horizontal_lines(tolerance: 0.5)

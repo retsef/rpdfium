@@ -425,6 +425,21 @@ module Rpdfium
     attach_function :FPDFPageObj_GetLineJoin,  %i[FPDF_PAGEOBJECT], :int
 
     # =========================================================================
+    # Form XObjects: contenitori che incapsulano grafica (linee, rect, testo)
+    # come "subroutine grafica" riutilizzabile. Nei PDF generati da gestionali
+    # (TeamSystem, Zucchetti, ...) e da molti template Word/Excel, l'INTERA
+    # pagina è un singolo Form XObject. Senza discendervi dentro, non si
+    # vedono linee/rect/chars. Cf. PDF Spec 1.7 §8.10.
+    #
+    # Dopo FPDFFormObj_GetObject(form, i) si ottiene un FPDF_PAGEOBJECT child
+    # le cui coordinate sono nel sistema del form. La trasformazione al
+    # sistema-pagina si ottiene da FPDFPageObj_GetMatrix(form_obj, &matrix).
+    # =========================================================================
+    attach_function :FPDFFormObj_CountObjects, %i[FPDF_PAGEOBJECT], :int
+    attach_function :FPDFFormObj_GetObject,
+                    %i[FPDF_PAGEOBJECT ulong], :FPDF_PAGEOBJECT
+
+    # =========================================================================
     # Path segments — fondamentali per detection linee tabella
     # =========================================================================
     attach_function :FPDFPath_CountSegments, %i[FPDF_PAGEOBJECT], :int

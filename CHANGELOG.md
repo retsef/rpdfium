@@ -3,6 +3,58 @@
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [0.3.1] - discesa nei Form XObjects
+
+### Risolto
+
+**`Page#line_segments` ora discende ricorsivamente nei Form XObjects**
+applicando la matrice di trasformazione affine che li posiziona nello spazio
+pagina. Prima di questa fix, su PDF dove la grafica della pagina era
+incapsulata in un singolo Form XObject (PDF generati da TeamSystem,
+Zucchetti e altri gestionali italiani; molti template Word/Excel),
+`line_segments` ritornava un Array vuoto anche se visivamente la pagina
+era piena di linee e bordi cella.
+
+Conseguenza diretta: `Page#vertical_lines`, `Page#horizontal_lines`, e la
+strategia `:lines` di `Table::Extractor` ora funzionano correttamente su
+questi PDF.
+
+Per il cedolino TeamSystem di test (`busta_paga.pdf`), i numeri:
+
+| Metrica           | prima 0.3.1 | dopo 0.3.1 | pdfplumber |
+| ----------------- | ----------: | ---------: | ---------: |
+| line_segments     |           0 |        525 |   420 (\*) |
+| horizontal_lines  |           0 |        375 |        210 |
+| vertical_lines    |           0 |        437 |        210 |
+| tabelle estratte  |           1 (\*\*) |     1 |          1 |
+| dimensione tab    |   1×N nonsens |  28×44 |      28×44 |
+
+(\*) pdfplumber decompone i 105 rettangoli in 4 lati ciascuno =
+420 edges; rpdfium attualmente li conta con duplicazione (le 4 linee del
+contour + il close-path), per questo 525 invece di 420. La detection di
+celle non ne risente perché lo snap+join collassa i duplicati.
+(\*\*) Senza linee, rpdfium 0.3.0 con strategia `:lines` non trovava
+tabelle e cadeva nel fallback `:text`, producendo una "tabella" gigantesca
+che copriva l'intera pagina.
+
+### Aggiunto
+
+- Bindings `FPDFFormObj_CountObjects` e `FPDFFormObj_GetObject` per
+  iterare i child di un Form XObject.
+- Helpers privati `compose_matrix`, `apply_matrix`, `read_object_matrix`
+  per la composizione di trasformazioni affini PDF.
+- Test di integrazione su PDF reale (`busta_paga.pdf`) che verifica:
+  numero minimo di line_segments, struttura della tabella anagrafica,
+  conteggio chars nel range atteso.
+
+### Compatibilità
+
+- Nessuna API breaking. `line_segments` mantiene la stessa firma e lo
+  stesso formato di output.
+- I PDF già funzionanti in 0.3.0 (con grafica top-level) continuano a
+  funzionare identici: la discesa nei Form XObjects parte dal CTM
+  identità, quindi a livello top non c'è cambiamento di coordinate.
+
 ## [0.3.0] - estrazione tabelle riallineata 1:1 a pdfplumber
 
 ### Riscritto da zero
