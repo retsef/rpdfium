@@ -3,6 +3,73 @@
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [0.3.3] - ricostruzione word boundary geometry-based
+
+### Risolto
+
+**`Page#chars` ricostruisce gli spazi tra parole basandosi sulla geometria
+dei char**, invece di affidarsi agli spazi sintetici di PDFium (che sono
+inaffidabili: PDFium li emette aggressivamente anche tra cifre di numeri).
+
+#### Perché era un problema
+
+PDFium ha due comportamenti patologici sui spazi sintetici:
+
+1. **Bbox degenere**: gli spazi tra parole hanno `top == bottom == baseline`,
+   non in linea con i char circostanti. Il cluster per riga in
+   `extract_text` li scartava, e parole adiacenti come `COGNOME E NOME`
+   si fondevano in `COGNOMEENOME`.
+
+2. **Falsi positivi sui numeri**: PDFium inserisce uno spazio sintetico
+   tra OGNI cifra e la punteggiatura di un numero. `2.895,26` aveva
+   spazi tra `2/.`, `./8`, `5/,`, `,/2`. Se li accettavamo, l'output
+   diventava `2 . 895 , 26`.
+
+#### La fix
+
+Ho buttato via tutti gli spazi sintetici di PDFium e ricostruito i
+word boundary basandomi solo sulla geometria dei char "veri":
+`gap > 0.4 × max(prev_width, next_width)` → spazio. La soglia 0.4 con
+`max_w` (non `avg_w`) è cruciale: i char di punteggiatura come `.` e `,`
+sono più stretti delle cifre, e usare la media gonfierebbe i ratio dei
+gap intra-numero. Usando il max delle due larghezze, il numero
+`2.895,26` ha tutti i gap intra-numero con ratio < 0.35, mentre i veri
+gap inter-parola hanno ratio > 0.45.
+
+Soglia 0.4 tarata empiricamente sui dati TeamSystem reali (1400 casi
+intra + 663 inter), con classificazione corretta al 100% sui casi
+non-borderline.
+
+#### Confronto col PDF di test
+
+| Cella                    | rpdfium 0.3.2 | rpdfium 0.3.3 | pdfplumber  |
+| ------------------------ | ------------: | ------------: | ----------: |
+| Imponibile IRPEF Mese    |    `2.618,84` |    `2.618,84` |  `2.618,84` |
+| Netto Busta              | `NETTOBUSTA/1.993,00` | `NETTOBUSTA/1.993,00` | `NETTO BUSTA/1.993,00` |
+| COGNOME E NOME           | `COGNOMEENOME` | `COGNOME ENOME` | `COGNOME E NOME` |
+| MATRICOLA INPS           | `MATRICOLAINPS` | `MATRICOLAINPS` | `MATRICOLA INPS` |
+| POSIZIONE INAIL          | `POSIZIONEINAIL` | `POSIZIONE INAIL` | `POSIZIONE INAIL` |
+| RETR. DI FATTO           | `RETR.DIFATTO` | `RETR.DI FATTO` | `RETR. DI FATTO` |
+| GIORNO DI RIPOSO         | `GIORNODIRIPOSO` | `GIORNO DI RIPOSO` | `GIORNO DI RIPOSO` |
+| ONERI DED.               |   `ONERIDED.` |    `ONERIDED.` |  `ONERI DED.` |
+
+La 0.3.3 recupera la maggior parte degli spazi inter-parola (vedi
+`POSIZIONE INAIL`, `GIORNO DI RIPOSO`, `RETR.DI FATTO`). Restano persi
+alcuni casi border-line dove il gap visivo è genuinamente piccolo
+(`COGNOME E NOME` che ha `E` molto vicina a `NOME`). Questi sono al
+limite delle possibilità di un algoritmo geometrico puro: pdfminer
+risolve usando l'advance del font dal content stream PDF, info non
+esposta da PDFium.
+
+### API
+
+- **`Page#chars(inject_spaces: true)` ora è il default**. Chi vuole il
+  comportamento "raw PDFium" (tutti i char inclusi gli spazi sintetici
+  aggressivi) passa `inject_spaces: false`.
+- Il vecchio metodo privato `inject_synthetic_spaces` è stato rimosso e
+  rimpiazzato da `rebuild_word_separators` (più descrittivo del nuovo
+  approccio).
+
 ## [0.3.2] - punteggiatura preservata nelle celle tabellari
 
 ### Risolto

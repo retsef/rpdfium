@@ -43,14 +43,26 @@ RSpec.describe "Loose char box integration", :integration do
   end
 
   describe "inject_spaces opt-in" do
-    it "is disabled by default" do
+    it "is enabled by default and rebuilds word separators from geometry" do
       Rpdfium.open(fixture) do |doc|
         cs = doc.page(0).chars
+        # Default: gli spazi sintetici di PDFium sono stati buttati via
+        # e ricostruiti basandosi sulla geometria. Conta che ci siano
+        # spazi generated (riconoscimento word boundary).
         synthetic = cs.count { |c| c[:char] == " " && c[:generated] }
-        # Senza injection ci sono solo gli spazi sintetici di PDFium "naturali"
-        baseline = synthetic
-        cs2 = doc.page(0).chars(inject_spaces: true)
-        expect(cs2.count { |c| c[:char] == " " && c[:generated] }).to be > baseline
+        expect(synthetic).to be > 100,
+          "Expected reconstructed word separators, got #{synthetic}"
+      end
+    end
+
+    it "with inject_spaces=false returns raw PDFium chars (with their flawed synthetic spaces)" do
+      Rpdfium.open(fixture) do |doc|
+        cs = doc.page(0).chars(inject_spaces: false)
+        # Senza ricostruzione: arrivano gli spazi sintetici originali di
+        # PDFium con bbox degenere. Ce ne sono molti più (PDFium li mette
+        # aggressivamente tra cifre).
+        synthetic = cs.count { |c| c[:char] == " " && c[:generated] }
+        expect(synthetic).to be > 0
       end
     end
   end
