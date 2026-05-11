@@ -194,22 +194,28 @@ module Rpdfium
         row_sorted.each do |c|
           if prev
             gap = c[:x0] - prev[:x1]
-            # max delle due larghezze: i char stretti come `.` o `,`
-            # gonfierebbero il ratio se usati come riferimento. Pdfminer
-            # confronta con la larghezza del char "tipico" che sarà ~ il
-            # max dei due, mai il min.
-            char_w = [(prev[:x1] - prev[:x0]), (c[:x1] - c[:x0])].max
-            threshold = char_w > 0 ? char_w * 0.4 : 0.5
-            if gap > threshold
-              result << {
-                char: " ", codepoint: 32,
-                x0: prev[:x1], x1: c[:x0],
-                top: prev[:top], bottom: prev[:bottom],
-                origin_x: prev[:x1], origin_y: prev[:origin_y],
-                angle: 0.0, fontsize: prev[:fontsize], font: prev[:font],
-                weight: prev[:weight], render_mode: nil,
-                generated: true, hyphen: false, unicode_error: false
-              }
+
+            # Segnale dal content stream PDF: prev.text_obj_ends_with_space.
+            # Se prev NON termina un token (false), il gap è kerning interno
+            # → mai inserire spazio.
+            #
+            # Se prev termina un token (true), può essere:
+            #   - vera fine parola (gap geometrico relativamente grande)
+            #   - fine token sintattico (es. tra cifre e punteggiatura di
+            #     un numero "2", "."), con gap piccolo.
+            #
+            # Discrimino con la soglia geometrica abbinata al "contesto"
+            # tipografico: se la coppia (prev_char, curr_char) sembra un
+            # contesto numerico (cifre + punteggiatura), uso soglia più
+            # alta; altrimenti soglia normale.
+            obj_signal_present = prev.key?(:text_obj_ends_with_space)
+            obj_says_continues = obj_signal_present && !prev[:text_obj_ends_with_space]
+
+            unless obj_says_continues
+              ref_w = best_reference_width(prev, c)
+              threshold_ratio = numeric_context?(prev[:char], c[:char]) ? 0.7 : 0.3
+              threshold = ref_w > 0 ? ref_w * threshold_ratio : 0.5
+              result << build_synthetic_space(prev, c) if gap > threshold
             end
           end
           result << c
@@ -217,6 +223,48 @@ module Rpdfium
         end
       end
       result
+    end
+
+    # True se la coppia (prev_char, curr_char) è un contesto "numerico":
+    # cifra-punteggiatura, punteggiatura-cifra, o cifra-cifra. In questi
+    # casi un gap modesto è probabilmente kerning interno al numero, non
+    # confine di parola. Soglia più alta per evitare di spezzare numeri
+    # come "2.895,26" in "2 . 895 , 26".
+    NUMERIC_PUNCT = %w[. , ].freeze
+
+    def numeric_context?(prev_char, curr_char)
+      return false if prev_char.nil? || curr_char.nil?
+
+      prev_num = prev_char.match?(/\d/) || NUMERIC_PUNCT.include?(prev_char)
+      curr_num = curr_char.match?(/\d/) || NUMERIC_PUNCT.include?(curr_char)
+      prev_num && curr_num
+    end
+
+    # Ritorna la larghezza "di riferimento" per il calcolo del ratio
+    # gap/width. Preferisce l'advance (più stabile di bbox per char con
+    # kerning post-applied). Se uno dei due char non ha advance, fallback
+    # su max delle bbox-width.
+    def best_reference_width(a, b)
+      a_adv = a[:advance]
+      b_adv = b[:advance]
+      if a_adv && b_adv
+        [a_adv, b_adv].max
+      else
+        [(a[:x1] - a[:x0]), (b[:x1] - b[:x0])].max
+      end
+    end
+
+    def build_synthetic_space(prev, c)
+      {
+        char: " ", codepoint: 32,
+        x0: prev[:x1], x1: c[:x0],
+        top: prev[:top], bottom: prev[:bottom],
+        origin_x: prev[:x1], origin_y: prev[:origin_y],
+        angle: 0.0, fontsize: prev[:fontsize], font: prev[:font],
+        weight: prev[:weight], render_mode: nil,
+        generated: true, hyphen: false, unicode_error: false,
+        advance: nil, text_obj_id: nil, text_obj_ends_with_space: nil
+      }
     end
 
 
@@ -237,19 +285,11 @@ module Rpdfium
       font_buf = FFI::MemoryPointer.new(:uchar, 256)
       flags_buf = FFI::MemoryPointer.new(:int)
 
-      # Cache: il render mode è una proprietà del TEXT OBJECT, non del char.
-      # Tutti i char dello stesso text object hanno lo stesso render mode.
-      # Convertiamo il pointer FFI in una chiave Integer (`address`) perché
-      # FFI::Pointer non è una chiave Hash stabile (#hash differisce tra
-      # istanze anche se address uguale).
-      render_mode_cache = {}
-      get_render_mode = lambda do |char_index|
-        text_obj = Raw.FPDFText_GetTextObject(tp.handle, char_index)
-        return -1 if text_obj.null?
-
-        addr = text_obj.address
-        render_mode_cache[addr] ||= Raw.FPDFTextObj_GetTextRenderMode(text_obj)
-      end
+      # Cache per text object: tutti i char dello stesso text object
+      # condividono render_mode, font handle, font_size, e la stessa
+      # CTM-scale per il calcolo advance. Chiave: pointer.address (Integer)
+      # perché FFI::Pointer non è un Hash key stabile tra istanze.
+      text_obj_cache = {}
 
       n.times do |i|
         if loose
@@ -273,20 +313,35 @@ module Rpdfium
                     end
         cp = Raw.FPDFText_GetUnicode(tp.handle, i)
 
-        # render_mode via il path nuovo. Su PDFium che non espone più
-        # FPDFText_GetTextRenderMode (chromium/6611+), questa è l'UNICA
-        # strada. La cache rende l'overhead marginale anche con migliaia
-        # di char (un solo Get/Lookup per text object).
-        rm = begin
-          get_render_mode.call(i)
+        # Risolvi il text object una volta sola e cache tutto ciò che
+        # dipende solo da esso. Su PDFium < chromium/6611 questa lookup
+        # non esiste — in quel caso text_obj sarà null e tutti i campi
+        # derivati saranno nil.
+        text_obj = begin
+          Raw.FPDFText_GetTextObject(tp.handle, i)
         rescue Rpdfium::LoadError
-          # FPDFText_GetTextObject non disponibile in build PDFium
-          # antichi (< chromium/6611). In quel caso lasciamo nil:
-          # gli utenti su build vecchi non hanno comunque mai avuto
-          # render_mode affidabile per via di altri bug upstream.
           nil
         end
 
+        rm, font_handle, font_size_for_obj =
+          fetch_text_obj_info(text_obj, tp, text_obj_cache)
+
+        # Testo dell'obj dal char `i` in poi: PDFium ritorna i char dal
+        # char_index fino alla fine del text obj. Se l'ultimo char dell'obj
+        # include uno spazio del content stream, lo vediamo come trailing
+        # space → segnale di "fine token" dichiarato dal PDF.
+        obj_text = read_text_obj_text_from(text_obj, tp, i)
+
+        # Advance in coordinate pagina: glyph_width nel font program ×
+        # scala orizzontale del CTM per QUESTO char (la matrix è per-char
+        # in PDFium). Più affidabile della bbox width per char con kerning
+        # applicato dopo il rendering.
+        advance = compute_glyph_advance(font_handle, cp, font_size_for_obj,
+                                         tp, i)
+
+        # render_mode via il path nuovo. Su PDFium che non espone più
+        # FPDFText_GetTextRenderMode (chromium/6611+), questa è l'UNICA
+        # strada.
         result[i] = {
           char:     safe_codepoint(cp),
           codepoint: cp,
@@ -303,10 +358,95 @@ module Rpdfium
           render_mode:   rm,
           generated:     Raw.FPDFText_IsGenerated(tp.handle, i) == 1,
           hyphen:        Raw.FPDFText_IsHyphen(tp.handle, i) == 1,
-          unicode_error: Raw.FPDFText_HasUnicodeMapError(tp.handle, i) == 1
+          unicode_error: Raw.FPDFText_HasUnicodeMapError(tp.handle, i) == 1,
+
+          # Nuove proprietà 0.3.4 derivate dal text object.
+          # `:advance` = larghezza nominale del glifo in coordinate pagina,
+          # come dichiarato dal font program × scala CTM. Più stabile della
+          # `bbox_w` per char di larghezza visiva variabile (glifi con
+          # kerning applicato dal content stream).
+          # `:text_obj_id` = identificatore Integer stabile del text obj
+          # (per cache lookup utente lato esterno).
+          # `:text_obj_ends_with_space` = il testo del text obj così come
+          # PDFium lo espone (un singolo char o sequenza breve) termina
+          # con uno spazio. Segnale che il content stream PDF ha dichiarato
+          # "fine token" qui — utile come indizio (non garanzia) di word
+          # boundary.
+          advance: advance,
+          text_obj_id: text_obj && !text_obj.null? ? text_obj.address : nil,
+          text_obj_ends_with_space: obj_text&.end_with?(" ")
         }
       end
       result
+    end
+
+    # Cache lookup per text object. Restituisce tupla:
+    #   [render_mode, font_handle, font_size]
+    # NOTA: obj_text NON è in cache perché FPDFTextObj_GetText ritorna
+    # testo specifico al char interrogato (non al text obj intero). Va
+    # letto per ogni char separatamente.
+    def fetch_text_obj_info(text_obj, _tp, cache)
+      return [nil, nil, nil] if text_obj.nil? || text_obj.null?
+
+      addr = text_obj.address
+      return cache[addr] if cache.key?(addr)
+
+      rm = Raw.FPDFTextObj_GetTextRenderMode(text_obj)
+      font = Raw.FPDFTextObj_GetFont(text_obj)
+      font_handle = font.null? ? nil : font
+
+      fs_buf = FFI::MemoryPointer.new(:float)
+      font_size = if Raw.FPDFTextObj_GetFontSize(text_obj, fs_buf) == 1
+                    fs_buf.read_float
+                  end
+
+      tuple = [rm, font_handle, font_size]
+      cache[addr] = tuple
+      tuple
+    end
+
+    # Legge il testo del text obj a partire dal char `char_index`.
+    # Comportamento PDFium: ritorna i char dal char_index in poi nell'obj.
+    # L'ultimo char dell'obj include eventuali spazi di trailing del
+    # content stream — segnale di "fine token" dichiarato dal PDF.
+    def read_text_obj_text_from(text_obj, tp, char_index_unused = nil)
+      return nil if text_obj.nil? || text_obj.null?
+
+      buf = FFI::MemoryPointer.new(:uint16, 64)
+      nbytes = Raw.FPDFTextObj_GetText(text_obj, tp.handle, buf, 64)
+      return nil if nbytes < 2
+
+      raw = buf.read_bytes((nbytes - 1) * 2)
+      raw.force_encoding("UTF-16LE").encode("UTF-8").delete("\u0000")
+    end
+
+    # Calcola l'advance del glifo in coordinate pagina, per un char
+    # specifico identificato da (text_page, char_index).
+    # Formula: glyph_width(font, codepoint, font_size) × |CTM.a|.
+    # Ritorna nil se l'advance non è calcolabile (font non disponibile,
+    # PDFium che non supporta l'API).
+    def compute_glyph_advance(font, codepoint, font_size, tp, char_index)
+      return nil if font.nil? || font_size.nil?
+
+      gw_buf = FFI::MemoryPointer.new(:float)
+      ok = begin
+        Raw.FPDFFont_GetGlyphWidth(font, codepoint, font_size, gw_buf)
+      rescue Rpdfium::LoadError
+        return nil  # FPDFFont_GetGlyphWidth non disponibile in build vecchi
+      end
+      return nil if ok == 0
+
+      glyph_w_font_units = gw_buf.read_float
+      scale = char_ctm_scale_x(tp, char_index) || 1.0
+      glyph_w_font_units * scale
+    end
+
+    # Calcola la scala orizzontale del CTM per un char specifico.
+    def char_ctm_scale_x(tp, char_index)
+      mat = Raw::FS_MATRIX.new
+      return nil if Raw.FPDFText_GetMatrix(tp.handle, char_index, mat) == 0
+
+      mat[:a].abs
     end
 
     # Aggrega i caratteri in "parole" via clustering layout-aware.

@@ -508,6 +508,33 @@ module Rpdfium
     attach_function :FPDFFont_GetItalicAngle,
                     %i[FPDF_FONT pointer], :FPDF_BOOL
 
+    # Metriche font ascendente/discendente in unità del font program.
+    # Per ottenere il valore in coordinate pagina serve moltiplicare per
+    # font_size del text object e poi per la scala del CTM. Utili per
+    # baseline detection e leading di linee.
+    attach_function :FPDFFont_GetAscent,  %i[FPDF_FONT int pointer], :FPDF_BOOL
+    attach_function :FPDFFont_GetDescent, %i[FPDF_FONT int pointer], :FPDF_BOOL
+
+    # Larghezza nominale di un glifo nel font program ("advance width").
+    # È la larghezza che il PDF dichiara per quel glifo prima del kerning
+    # applicato dagli operatori `TJ`. In combinazione con FPDFText_GetMatrix
+    # (per la scala del CTM), permette di calcolare l'advance reale in
+    # coordinate pagina. Equivale concettualmente all'advance che pdfminer.six
+    # legge dal font program direttamente.
+    #
+    # ATTENZIONE: il valore ritornato è in unità "scalate per font_size",
+    # con font_size passato come parametro. Per la maggior parte dei PDF
+    # generati da gestionali, il font_size è 1.0 e il CTM scala
+    # (tipicamente 5×–10× per il rendering finale).
+    attach_function :FPDFFont_GetGlyphWidth,
+                    %i[FPDF_FONT uint float pointer], :FPDF_BOOL
+
+    # Matrice di trasformazione del char a livello pagina.
+    # Composizione: rendering_matrix = CTM × Tm × text_state. Per testo
+    # non ruotato, `:a` è la scala orizzontale (font_units → page_units).
+    attach_function :FPDFText_GetMatrix,
+                    %i[FPDF_TEXTPAGE int pointer], :FPDF_BOOL
+
     # =========================================================================
     # Annotations
     # =========================================================================

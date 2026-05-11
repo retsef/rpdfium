@@ -3,6 +3,7 @@
 require "spec_helper"
 
 # Test di non-regressione basato sul layout REALE di un cedolino TeamSystem
+# (estratto dal dump diagnostico di un cedolino italiano reale).
 #
 # La tabella "voci paga" ha:
 #   - header a y≈199.8 con 6 colonne: VOCE | DESCRIZIONE | ORE/GIORNI | BASE

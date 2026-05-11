@@ -3,6 +3,81 @@
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [0.3.4] - advance del glifo, identità text-object, segnale fine-token
+
+### Aggiunto: bindings e nuove proprietà sui char
+
+Tre binding PDFium fondamentali che mancavano:
+
+- **`FPDFFont_GetGlyphWidth(font, glyph_cp, font_size, *float)`** — larghezza
+  nominale del glifo nel font program. Equivale concettualmente alla
+  metric che pdfminer.six legge dal font dictionary del PDF.
+
+- **`FPDFFont_GetAscent` / `FPDFFont_GetDescent`** — metriche font in
+  unità del font program, utili per baseline e leading detection.
+
+- **`FPDFText_GetMatrix(textpage, char_index, *FS_MATRIX)`** — matrice di
+  trasformazione (CTM) applicata al char. Componente `:a` è la scala
+  orizzontale font→pagina.
+
+Queste binding sono ora esposte come API pubbliche di `Rpdfium::Raw` ed
+utilizzate internamente per arricchire ogni char con tre nuove proprietà:
+
+| Proprietà                  | Tipo     | Significato |
+| -------------------------- | -------- | ----------- |
+| `:advance`                 | Float?   | Larghezza nominale del glifo in coordinate pagina, calcolata come `glyph_width × |CTM.a|`. Più stabile della `bbox_width` per char con kerning post-applied. |
+| `:text_obj_id`             | Integer? | Identificatore stabile (pointer address) del text object contenente questo char. Tutti i char dello stesso text obj condividono lo stesso ID — utile per raggruppare semanticamente char correlati a livello content-stream. |
+| `:text_obj_ends_with_space` | bool?  | True se il content stream PDF ha emesso uno spazio finale dopo questo char (es. fine di un token testuale). Segnale di "fine token" dichiarato dal PDF — non sempre coincidente con fine parola visiva, ma utile come indizio. |
+
+### Migliorato: rebuild_word_separators usa i nuovi segnali
+
+`Page#chars` (con `inject_spaces: true`, default) ora ricostruisce i word
+boundary combinando:
+
+1. **Veto duro**: se `prev[:text_obj_ends_with_space] == false`, nessuno
+   spazio viene inserito anche con gap geometrico grande. È kerning
+   interno a un token dichiarato dal PDF.
+
+2. **Threshold dinamica**: per i candidati ammessi (prev fine-token o
+   segnale assente), uso soglia geometrica `gap > 0.3 × max_advance`
+   come default, alzata a `0.7 × max_advance` se il contesto è numerico
+   (cifre o punteggiatura `.`/`,`). Questa euristica preserva i numeri
+   `2.895,26`/`1.993,00` interi mentre recupera la maggior parte degli
+   spazi tra parole.
+
+### Confronto con pdfplumber sul PDF di test
+
+Recuperi netti rispetto alla 0.3.3:
+
+| Cella                  | rpdfium 0.3.3 | rpdfium 0.3.4 | pdfplumber |
+| ---------------------- | ------------: | ------------: | ---------: |
+| COGNOME E NOME         | `COGNOME ENOME` | `COGNOME E NOME` ✓ | `COGNOME E NOME` |
+| MATRICOLA INPS         | `MATRICOLAINPS` | `MATRICOLA INPS` ✓ | `MATRICOLA INPS` |
+| POSIZIONE INAIL        | `POSIZIONE INAIL` ✓ | `POSIZIONE INAIL` ✓ | `POSIZIONE INAIL` |
+| DATA NASCITA           | `DATANASCITA` | `DATA NASCITA` ✓ | `DATA NASCITA` |
+| CODICE FISCALE         | `CODICE FISCALE` ✓ | `CODICE FISCALE` ✓ | `CODICE FISCALE` |
+| COMUNE DI RESIDENZA    | `COMUNEDI RESIDENZA` | `COMUNE DI RESIDENZA` ✓ | `COMUNE DI RESIDENZA` |
+| DATA ASSUNZIONE        | `DATAASSUNZIONE` | `DATA ASSUNZIONE` ✓ | `DATA ASSUNZIONE` |
+| QUALIFICA INPS         | `QUALIFICAINPS` | `QUALIFICA INPS` ✓ | `QUALIFICA INPS` |
+| TIPO RAPPORTO          | `TIPORAPPORTO` | `TIPO RAPPORTO` ✓ | `TIPO RAPPORTO` |
+| RETR. DI FATTO         | `RETR.DI FATTO` | `RETR. DI FATTO` ✓ | `RETR. DI FATTO` |
+| CCNL APPLICATO         | `CCNLAPPLICATO` | `CCNL APPLICATO` ✓ | `CCNL APPLICATO` |
+| ADD. REG. ANNO DOVUTA  | `ADD. REG.ANNODOVUTA` | `ADD. REG. ANNO DOVUTA` ✓ | `ADD. REG. ANNO DOVUTA` |
+| ADD. COM. ANNO DOVUTA  | `ADD. COM.ANNODOVUTA` | `ADD. COM. ANNO DOVUTA` ✓ | `ADD. COM. ANNO DOVUTA` |
+| BONUS IRPEF ANNO       | `BONUS IRPEFANNO` | `BONUS IRPEF ANNO` ✓ | `BONUS IRPEF ANNO` |
+| 2.857,15 (e altri num) | `2.857,15` ✓ | `2.857,15` ✓ | `2.857,15` |
+
+Casi border-line residui (PDFium non emette il segnale fine-token):
+`Sede pr i nc`, `Imp i ega to`, `IMPONIBILE INAILMESE`. Pdfminer.six li
+gestisce perché legge gli operatori `TJ` con kerning dal content stream
+raw, info che PDFium consuma internamente e non espone via API pubblica.
+
+### Test
+
+- 30 unit test + 8 test di integrazione su PDF reale, tutti verdi.
+- Nuovi test: presenza di `:advance`, `:text_obj_id`,
+  `:text_obj_ends_with_space` su char reali.
+
 ## [0.3.3] - ricostruzione word boundary geometry-based
 
 ### Risolto
@@ -300,7 +375,7 @@ Inoltre se `ENV["PDFIUM_LIBRARY_PATH"]` o `Rpdfium::Binary.library_path`
   cells (smallest-cell + edge identity check), table (rows/columns/bbox/
   extract con midpoint), extractor end-to-end con FakePage, regressione
   TeamSystem (no più cross-cell concatenation; words_to_edges_v sui dati
-  reali di un cedolino).
+  reali di un cedolino italiano in formato TeamSystem).
 
 ## [0.2.1] - allineamento PDFium chromium/6611+
 
