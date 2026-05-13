@@ -3,6 +3,65 @@
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [0.3.10] - bugfix: ordine char nelle celle con `top` quasi-uguale
+
+### Risolto: parole scrambled tipo `iCategora` invece di `Categoria`
+
+Su alcuni PDF (esempio: CR Banca d'Italia, pag. 199+ con font piccolo)
+le celle delle tabelle uscivano con char riordinati in modo errato:
+
+| Atteso        | Output errato        |
+| ------------- | -------------------- |
+| `Categoria`   | `iCategora`          |
+| `Localizzazione` | `iLoca li zzazone i` |
+| `Tipo Attività` | `iTpo i Attvt i i à` |
+
+Pattern: il char `i` (e occasionalmente altri con `x-height` sottile)
+veniva spostato all'inizio della parola o disperso.
+
+### Causa
+
+Regressione dell'ottimizzazione 0.3.9 in `WordExtractor#extract_words`.
+
+L'ottimizzazione partiva dal presupposto che, dopo `chars.sort_by { |c|
+[c[:top], c[:x0]] }` + `Cluster.cluster_objects(:top)`, ogni cluster
+"riga" fosse già ordinato internamente per x0 — quindi il `row.sort_by
+{ |c| c[:x0] }` interno era eliminato come ridondante.
+
+Il presupposto è **falso** quando due char della stessa riga visiva hanno
+`top` leggermente diversi (es. la `i` minuscola di `Categoria` ha
+`top=414.9789`, le altre lettere `top=414.9869`, differenza 0.008pt).
+PDFium spesso assegna alle bbox di char ascender/descender top
+leggermente diversi per ragioni di hinting/anti-aliasing. La
+differenza è invisibile graficamente ma rilevante per il sort.
+
+Effetto: il sort globale `[top, x0]` mette la `i` (top minore) **prima
+di tutte le altre lettere** della parola, indipendentemente da x0. Il
+`cluster_objects` poi raggruppa tutti i char nella stessa riga (entro
+y_tolerance=3.0), ma non riordina internamente. Quindi all'iterazione
+della riga, la `i` viene letta per prima e finisce all'inizio.
+
+### Fix
+
+Ripristinato il `row_sorted = row.sort_by { |c| c[:x0] }` dentro il
+loop delle righe. L'ottimizzazione 0.3.9 era valida solo per il caso
+di top perfettamente identici; non lo è in generale.
+
+Il costo computazionale aggiunto è marginale: un sort O(n log n) su
+righe corte (~50 char), dominato dall'overhead dell'FFI roundtrip per
+char nella fase precedente. Verificato empiricamente: tempo
+`extract_text` su 20 pagine di complex.pdf invariato (~80ms).
+
+### Test di non-regressione
+
+Tutti i PDF di test continuano a funzionare correttamente:
+
+- ✅ busta_paga.pdf: numeri (`1.993,00`, `2.895,26`), spazi parole (`COGNOME E NOME`, `NETTO BUSTA`)
+- ✅ sample.pdf: Lorem ipsum (2913 char)
+- ✅ complex.pdf (85 pag): 224.645 char totali
+- ✅ cu.pdf pag. 1 (rotation 90°): `BANCA NAZIONALE DEL LAVORO`, `Categoria`, valori numerici
+- ✅ **cu.pdf pag. 199** (rotation 0°, font piccolo): `Categoria`, `Localizzazione`, `Tipo Attività`, `Accordato Operativo` — tutti integri
+
 ## [0.3.8] - supporto pagine ruotate (90°, 180°, 270°)
 
 ### Risolto: estrazione completamente errata su PDF con `Page#rotation != 0`

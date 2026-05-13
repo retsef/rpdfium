@@ -57,9 +57,23 @@ module Rpdfium
 
         words = []
         rows.each do |row|
-          # L'input `sorted` è già ordinato per [top, x0]; cluster_objects
-          # preserva l'ordine relativo, quindi ogni riga è già in ordine x0.
-          row_sorted = row
+          # Re-sort per x0 dentro ogni riga clusterizzata.
+          #
+          # NOTA: in linea di principio l'input `sorted` è già ordinato per
+          # [top, x0], quindi i cluster di top dovrebbero essere già in
+          # ordine x0. MA il sort globale `[top, x0]` rispetta strettamente
+          # l'ordine per top — se due char della stessa riga visiva hanno
+          # top diversi entro tolerance (es. la "i" minuscola spesso ha
+          # top più alto di 0.008pt rispetto alle altre lettere a causa di
+          # come PDFium calcola la bbox), il sort globale li interfoglia.
+          # Il cluster_objects per :top non riordina internamente i char,
+          # quindi un char con top leggermente minore finisce DAVANTI a
+          # tutte le altre lettere della parola.
+          #
+          # Esempio reale: "Categoria" dove "i" ha top=414.9789 e le altre
+          # 414.9869 → output `iCategora` invece di `Categoria`.
+          # Il fix è semplicemente ri-sortare per x0 dentro la riga.
+          row_sorted = row.sort_by { |c| c[:x0] }
 
           word_chars = []
           row_sorted.each do |c|
