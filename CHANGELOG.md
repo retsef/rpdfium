@@ -3,6 +3,90 @@
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [0.3.7] - bugfix critico: buffer overrun in `read_text_obj_text_from`
+
+### Risolto: IndexError "Memory access offset=0 size=N out of bounds"
+
+`Page#chars` (e di conseguenza `extract_text` / `extract_tables`) crashava
+con `IndexError` quando un text object PDF conteneva una stringa più
+lunga di 128 byte (parole come `consectetuer`, `Phasellus`, frasi intere
+da rivista). Lo stack trace tipico:
+
+```
+IndexError: Memory access offset=0 size=158 out of bounds
+  page.rb:429 in FFI::AbstractMemory#read_bytes
+  page.rb:429 in Page#read_text_obj_text_from
+  page.rb:343 in block in Page#compute_chars
+```
+
+Sui PDF tipici di gestionali italiani (cedolini TeamSystem) il bug NON
+si manifestava perché ogni text object lì contiene 1-4 char (sotto-soglia).
+Si attivava su PDF con text run più lunghi (riviste, articoli, qualsiasi
+PDF generato da TeX/Word/InDesign con kerning conservato a livello di
+parola).
+
+### Causa
+
+Errore mio nell'introdurre `:text_obj_ends_with_space` nella 0.3.4. La
+firma C di `FPDFTextObj_GetText` è:
+
+```c
+unsigned long FPDFTextObj_GetText(FPDF_PAGEOBJECT, FPDF_TEXTPAGE,
+                                  FPDF_WCHAR* buffer, unsigned long length);
+```
+
+dove **`length` è in BYTE** (non in count di uint16) e il return è il
+numero di byte **totali necessari** per scrivere il testo, anche se il
+buffer è troppo piccolo. Stavamo allocando 64 uint16 (= 128 byte),
+passando `64` come length (interpretato da PDFium come 64 BYTE = 32
+uint16!), e poi leggendo `(nbytes - 1) * 2` byte dal buffer dove `nbytes`
+era il return-value, che eccedeva il buffer allocato. Tre bug
+sovrapposti.
+
+### Fix
+
+Pattern probe-then-fetch con clamp difensivo:
+
+1. Provo con buffer ragionevole (256 byte = 128 char UTF-16, copre ~99%
+   dei text obj reali).
+2. Se PDFium ne richiede di più (`needed > buf_capacity`), rialloco
+   esatto e rileggo.
+3. Clamp finale: leggo `min(needed - 2, buf_capacity - 2)` byte, mai
+   oltre quanto effettivamente allocato. Difesa-in-profondità.
+
+Il costo extra di FFI nei casi tipici è zero (il buffer iniziale basta);
+solo per text obj > 256 byte serve una seconda chiamata.
+
+### Bug latenti collaterali fixati
+
+Stesso pattern di buffer-overrun era presente in 3 altri helper aggiunti
+nella 0.3.6:
+
+- `read_mark_name` (buffer 128 uint16)
+- `read_mark_param_key` (buffer 64 uint16)
+- `read_mark_param_string` (buffer 256 uint16)
+
+Mai stati hit in produzione perché i mark name / param sono tipicamente
+brevi ("Span", "Artifact", "MCID"), ma la patologia esisteva.
+Risolti tutti con lo stesso clamp.
+
+Anche `Structure::Attachment#bytes` aveva un pattern analogo: leggeva
+`buf.read_bytes(out_size.read_ulong)` dopo la seconda chiamata, dove
+`out_size` poteva eccedere il buffer. Cambiato a `buf.read_bytes(n)`
+con `n` = dimensione effettivamente allocata.
+
+### Test
+
+Smoke test esteso su `sample.pdf`, `complex.pdf` (60 MB / 85 pagine),
+e `busta_paga.pdf`: tutte le API pubbliche (`chars`, `words`, `text`,
+`line_segments`, `mediabox`, `cropbox`, `annotations`, `images`,
+`marked_content_regions`, `marked_content_inventory`, `extract_tables`,
+`attachments`) verdi su tutti e tre i PDF.
+
+Tutti i valori critici di non-regressione preservati:
+`1.993,00`, `2.895,26`, `COGNOME E NOME`, `MATRICOLA INPS`,
+`NETTO BUSTA`, Lorem ipsum su sample, 224.645 char su complex.
+
 ## [0.3.6] - copertura binding pubbliche PDFium
 
 ### Aggiunto: 52 binding pubbliche PDFium mancanti

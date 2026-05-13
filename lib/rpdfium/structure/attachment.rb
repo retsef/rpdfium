@@ -25,7 +25,11 @@ module Rpdfium
 
       buf = FFI::MemoryPointer.new(:uchar, n)
       Raw.FPDFAttachment_GetFile(@handle, buf, n, out_size)
-      buf.read_bytes(out_size.read_ulong)
+      # Leggo n byte (la dimensione del MIO buffer), non out_size.read_ulong:
+      # PDFium può aggiornare out_size con un valore diverso da n (es. dim
+      # totale necessaria) che leggerebbe oltre il buffer → IndexError.
+      # Se la write effettiva è < n, riempie il resto con NUL.
+      buf.read_bytes(n)
     end
 
     def save(path)

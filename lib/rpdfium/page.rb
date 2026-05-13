@@ -415,19 +415,44 @@ module Rpdfium
       tuple
     end
 
-    # Legge il testo del text obj a partire dal char `char_index`.
-    # Comportamento PDFium: ritorna i char dal char_index in poi nell'obj.
-    # L'ultimo char dell'obj include eventuali spazi di trailing del
-    # content stream — segnale di "fine token" dichiarato dal PDF.
-    def read_text_obj_text_from(text_obj, tp, char_index_unused = nil)
+    # Buffer size iniziale per FPDFTextObj_GetText: 256 byte = 128 char UTF-16.
+    # Empiricamente sufficiente per ~99% dei text object reali (parole singole
+    # o frasi brevi). Quando un text obj è più grande, ricadiamo nel probe-then-
+    # fetch corretto.
+    TEXT_OBJ_INITIAL_BUF_BYTES = 256
+
+    # Legge il testo di un text object PDF.
+    #
+    # Firma C: `unsigned long FPDFTextObj_GetText(FPDF_PAGEOBJECT, FPDF_TEXTPAGE,
+    # FPDF_WCHAR* buffer, unsigned long length)` — length in BYTE, return è
+    # il numero di byte totali necessari (incluso null terminator), anche se
+    # il buffer è troppo piccolo. Pattern: prova con buffer stack-friendly,
+    # se PDFium ne richiede di più rialloca.
+    def read_text_obj_text_from(text_obj, tp, _char_index_unused = nil)
       return nil if text_obj.nil? || text_obj.null?
 
-      buf = FFI::MemoryPointer.new(:uint16, 64)
-      nbytes = Raw.FPDFTextObj_GetText(text_obj, tp.handle, buf, 64)
-      return nil if nbytes < 2
+      # Prima tentativo: buffer fisso da 256 byte. Risolve il 99% dei casi.
+      buf = FFI::MemoryPointer.new(:uint8, TEXT_OBJ_INITIAL_BUF_BYTES)
+      needed = Raw.FPDFTextObj_GetText(text_obj, tp.handle, buf,
+                                        TEXT_OBJ_INITIAL_BUF_BYTES)
+      return nil if needed < 2
 
-      raw = buf.read_bytes((nbytes - 1) * 2)
-      raw.force_encoding("UTF-16LE").encode("UTF-8").delete("\u0000")
+      # Se PDFium ne vuole più di quanto allocato, rialloca esatto.
+      if needed > TEXT_OBJ_INITIAL_BUF_BYTES
+        buf = FFI::MemoryPointer.new(:uint8, needed)
+        needed = Raw.FPDFTextObj_GetText(text_obj, tp.handle, buf, needed)
+        return nil if needed < 2
+      end
+
+      # Clamp difensivo: non leggo mai più di quanto allocato.
+      buf_capacity = buf.size
+      payload_bytes = [needed - 2, buf_capacity - 2].min
+      return nil if payload_bytes <= 0
+
+      buf.read_bytes(payload_bytes)
+         .force_encoding("UTF-16LE")
+         .encode("UTF-8")
+         .delete("\u0000")
     end
 
     # Calcola l'advance del glifo in coordinate pagina, per un char
@@ -940,14 +965,22 @@ module Rpdfium
 
     def read_mark_name(mark)
       out_len = FFI::MemoryPointer.new(:ulong)
-      name_buf = FFI::MemoryPointer.new(:uint16, 128)
-      return nil if Raw.FPDFPageObjMark_GetName(mark, name_buf, 128 * 2,
+      buf_bytes = 256
+      name_buf = FFI::MemoryPointer.new(:uint8, buf_bytes)
+      return nil if Raw.FPDFPageObjMark_GetName(mark, name_buf, buf_bytes,
                                                   out_len) == 0
 
-      n_bytes = out_len.read_ulong
-      return nil if n_bytes < 2
+      needed = out_len.read_ulong
+      return nil if needed < 2
 
-      name_buf.read_bytes(n_bytes - 2).force_encoding("UTF-16LE")
+      # Clamp: se needed eccede il buffer, leggo solo quanto allocato (e
+      # mi pace che la stringa sia troncata: il caso è patologico). Senza
+      # clamp → IndexError su mark name eccezionalmente lunghi.
+      payload_bytes = [needed - 2, buf_bytes - 2].min
+      return nil if payload_bytes <= 0
+
+      name_buf.read_bytes(payload_bytes)
+              .force_encoding("UTF-16LE")
               .encode("UTF-8")
               .delete("\u0000")
     end
@@ -971,15 +1004,20 @@ module Rpdfium
 
     def read_mark_param_key(mark, index)
       out_len = FFI::MemoryPointer.new(:ulong)
-      key_buf = FFI::MemoryPointer.new(:uint16, 64)
+      buf_bytes = 128
+      key_buf = FFI::MemoryPointer.new(:uint8, buf_bytes)
       return nil if Raw.FPDFPageObjMark_GetParamKey(mark, index,
-                                                      key_buf, 64 * 2,
+                                                      key_buf, buf_bytes,
                                                       out_len) == 0
 
-      n_bytes = out_len.read_ulong
-      return nil if n_bytes < 2
+      needed = out_len.read_ulong
+      return nil if needed < 2
 
-      key_buf.read_bytes(n_bytes - 2).force_encoding("UTF-16LE")
+      payload_bytes = [needed - 2, buf_bytes - 2].min
+      return nil if payload_bytes <= 0
+
+      key_buf.read_bytes(payload_bytes)
+             .force_encoding("UTF-16LE")
              .encode("UTF-8")
              .delete("\u0000")
     end
@@ -993,15 +1031,20 @@ module Rpdfium
 
     def read_mark_param_string(mark, key)
       out_len = FFI::MemoryPointer.new(:ulong)
-      val_buf = FFI::MemoryPointer.new(:uint16, 256)
+      buf_bytes = 512
+      val_buf = FFI::MemoryPointer.new(:uint8, buf_bytes)
       return nil if Raw.FPDFPageObjMark_GetParamStringValue(mark, key,
-                                                              val_buf, 256 * 2,
+                                                              val_buf, buf_bytes,
                                                               out_len) == 0
 
-      n_bytes = out_len.read_ulong
-      return nil if n_bytes < 2
+      needed = out_len.read_ulong
+      return nil if needed < 2
 
-      val_buf.read_bytes(n_bytes - 2).force_encoding("UTF-16LE")
+      payload_bytes = [needed - 2, buf_bytes - 2].min
+      return nil if payload_bytes <= 0
+
+      val_buf.read_bytes(payload_bytes)
+             .force_encoding("UTF-16LE")
              .encode("UTF-8")
              .delete("\u0000")
     end
