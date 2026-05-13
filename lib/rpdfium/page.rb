@@ -294,7 +294,24 @@ module Rpdfium
       n = tp.char_count
       return [] if n.zero?
 
+      # Geometria della pagina dopo l'applicazione della rotazione PDF.
+      # PDFium GetPageWidth/Height ritorna già i valori post-rotazione, ma
+      # le bbox dei char in FPDFText_GetCharBox sono espresse nelle coord
+      # raw (pre-rotazione). Per render-compatible output applichiamo
+      # manualmente la trasformazione di rotazione.
       h = height
+      w = width
+      page_rotation = rotation  # 0, 90, 180, 270 — già normalizzata
+
+      # Dimensioni della pagina RAW (pre-rotazione), che sono il sistema
+      # di coordinate in cui FPDFText_GetCharBox restituisce i punti.
+      # Per rotation 0/180 le dimensioni raw coincidono con quelle post-
+      # rotation; per 90/270 sono invertite.
+      raw_w, raw_h = case page_rotation
+                     when 90, 270 then [h, w]
+                     else [w, h]
+                     end
+
       result = Array.new(n)
       l = FFI::MemoryPointer.new(:double)
       r = FFI::MemoryPointer.new(:double)
@@ -315,6 +332,8 @@ module Rpdfium
       n.times do |i|
         x0, x1, y_top, y_bot = read_char_bbox(tp, i, loose, l, r, b, t, rect)
         Raw.FPDFText_GetCharOrigin(tp.handle, i, ox, oy)
+        origin_x_raw = ox.read_double
+        origin_y_raw = oy.read_double
         # Font name (best-effort): GetFontInfo è disponibile su tutte le
         # versioni di PDFium ed è il path più portabile a char-level.
         n_bytes = Raw.FPDFText_GetFontInfo(tp.handle, i, font_buf, 256, flags_buf)
@@ -349,18 +368,24 @@ module Rpdfium
         advance = compute_glyph_advance(font_handle, cp, font_size_for_obj,
                                          tp, i)
 
-        # render_mode via il path nuovo. Su PDFium che non espone più
-        # FPDFText_GetTextRenderMode (chromium/6611+), questa è l'UNICA
-        # strada.
+        # Trasforma le coord raw PDFium (bottom-up, pre-rotazione) nel
+        # sistema "logico" della pagina post-rotazione (top-down).
+        # Per rotation=0 la formula coincide con la conversione semplice
+        # bottom-up → top-down. Per 90/180/270 applica anche la rotazione.
+        td_x0, td_x1, td_top, td_bottom, td_ox, td_oy =
+          apply_page_rotation_to_char(page_rotation, raw_w, raw_h,
+                                       x0, x1, y_top, y_bot,
+                                       origin_x_raw, origin_y_raw)
+
         result[i] = {
           char:     safe_codepoint(cp),
           codepoint: cp,
-          x0:       x0,
-          x1:       x1,
-          top:      h - y_top,    # bottom-up → top-down
-          bottom:   h - y_bot,
-          origin_x: ox.read_double,
-          origin_y: h - oy.read_double,
+          x0:       td_x0,
+          x1:       td_x1,
+          top:      td_top,
+          bottom:   td_bottom,
+          origin_x: td_ox,
+          origin_y: td_oy,
           angle:    Raw.FPDFText_GetCharAngle(tp.handle, i),
           fontsize: Raw.FPDFText_GetFontSize(tp.handle, i),
           font:     font_name,
@@ -371,23 +396,89 @@ module Rpdfium
           unicode_error: Raw.FPDFText_HasUnicodeMapError(tp.handle, i) == 1,
 
           # Nuove proprietà 0.3.4 derivate dal text object.
-          # `:advance` = larghezza nominale del glifo in coordinate pagina,
-          # come dichiarato dal font program × scala CTM. Più stabile della
-          # `bbox_w` per char di larghezza visiva variabile (glifi con
-          # kerning applicato dal content stream).
-          # `:text_obj_id` = identificatore Integer stabile del text obj
-          # (per cache lookup utente lato esterno).
-          # `:text_obj_ends_with_space` = il testo del text obj così come
-          # PDFium lo espone (un singolo char o sequenza breve) termina
-          # con uno spazio. Segnale che il content stream PDF ha dichiarato
-          # "fine token" qui — utile come indizio (non garanzia) di word
-          # boundary.
           advance: advance,
           text_obj_id: text_obj && !text_obj.null? ? text_obj.address : nil,
           text_obj_ends_with_space: obj_text&.end_with?(" ")
         }
       end
       result
+    end
+
+    # Applica la rotazione della pagina alle coordinate di un char.
+    #
+    # Input: coord PDFium raw (bottom-up, pre-rotazione) di un bbox
+    # `[x0, x1, y_top, y_bot]` (con y_top > y_bot perché bottom-up) e
+    # di un origin point.
+    #
+    # Output: coord top-down nel sistema della pagina post-rotazione,
+    # nella convenzione standard di rpdfium: `[x0, x1, top, bottom]`
+    # con `top < bottom`. Coerente con pdfplumber.
+    #
+    # Convenzione PDFium: GetRotation = N significa che la pagina visualizzata
+    # è ruotata di N*90° in senso orario rispetto al sistema raw del content
+    # stream. PDFium restituisce le coord nel sistema raw; applichiamo la
+    # rotazione per allineare al rendering.
+    #
+    # Caso 0°: identità + bottom-up→top-down.
+    # Caso 90° CW: bbox larga in x diventa alta in y. La x_min (sinistra) raw
+    #   coincide con il top (alto) del sistema post-rotazione.
+    # Caso 180°: ribalta entrambi gli assi.
+    # Caso 270° CW: bbox larga in x diventa alta in y, ma invertita verticalmente.
+    def apply_page_rotation_to_char(rotation, raw_w, raw_h,
+                                     x0, x1, y_top, y_bot,
+                                     origin_x, origin_y)
+      case rotation
+      when 0, nil
+        # Nessuna rotazione. Bottom-up → top-down standard.
+        # page_h_post == raw_h.
+        [x0, x1, raw_h - y_top, raw_h - y_bot,
+         origin_x, raw_h - origin_y]
+
+      when 90
+        # 90° CW. Dimensioni post-rotation: w=raw_h, h=raw_w.
+        # Trasformazione: x_post = y_raw, y_post = raw_w - x_raw (bottom-up).
+        # In top-down: top = x_min_raw, bottom = x_max_raw.
+        new_x0 = y_bot   # piccolo y_raw → piccolo x_post
+        new_x1 = y_top   # grande y_raw → grande x_post
+        new_top    = x0  # piccolo x_raw → top piccolo (alto)
+        new_bottom = x1  # grande x_raw → bottom grande (basso)
+        new_ox = origin_y
+        new_oy = origin_x       # top-down origin_y = x_raw
+        [new_x0, new_x1, new_top, new_bottom, new_ox, new_oy]
+
+      when 180
+        # 180°. Dimensioni post-rotation: invariate (raw_w × raw_h).
+        # Trasformazione: x_post = raw_w - x_raw, y_post = raw_h - y_raw.
+        # In top-down: top = y_bot_raw, bottom = y_top_raw.
+        new_x0 = raw_w - x1
+        new_x1 = raw_w - x0
+        new_top    = y_bot   # bottom raw → top td (alto)
+        new_bottom = y_top   # top raw → bottom td (basso)
+        new_ox = raw_w - origin_x
+        new_oy = y_top.zero? ? raw_h - origin_y : raw_h - origin_y
+        # nota: origin in top-down post-180 = y_origin_raw
+        new_oy = origin_y
+        [new_x0, new_x1, new_top, new_bottom, new_ox, new_oy]
+
+      when 270
+        # 270° CW (= 90° CCW). Dimensioni post-rotation: w=raw_h, h=raw_w.
+        # Trasformazione: x_post = raw_h - y_raw, y_post = x_raw (bottom-up).
+        # In top-down: top = raw_w - x_max_raw, bottom = raw_w - x_min_raw.
+        new_x0 = raw_h - y_top  # grande y → piccolo x_post
+        new_x1 = raw_h - y_bot
+        new_top    = raw_w - x1
+        new_bottom = raw_w - x0
+        new_ox = raw_h - origin_y
+        new_oy = raw_w - origin_x
+        [new_x0, new_x1, new_top, new_bottom, new_ox, new_oy]
+
+      else
+        # Rotazione non standard (non multipla di 90°): fallback al
+        # comportamento pre-rotazione. Non dovrebbe mai succedere per
+        # PDF ben formati.
+        [x0, x1, raw_h - y_top, raw_h - y_bot,
+         origin_x, raw_h - origin_y]
+      end
     end
 
     # Cache lookup per text object. Restituisce tupla:
@@ -542,7 +633,16 @@ module Rpdfium
     #   le vuole esplicitamente (es. drawing extraction completo) passa true.
     def line_segments(include_curves: false, include_dashed: false)
       out = []
-      collect_line_segments(@state[:handle], identity_matrix, height,
+      # Per la trasformazione delle line endpoints applichiamo la stessa
+      # rotazione che applichiamo ai char. Sono nello stesso sistema raw
+      # PDFium (bottom-up, pre-rotazione).
+      page_rotation = rotation
+      raw_w, raw_h = case page_rotation
+                     when 90, 270 then [height, width]
+                     else [width, height]
+                     end
+      ctx = { rotation: page_rotation, raw_w: raw_w, raw_h: raw_h }
+      collect_line_segments(@state[:handle], identity_matrix, ctx,
                              include_curves, out, page_object: false)
       include_dashed ? out : out.reject { |s| s[:dashed] }
     end
@@ -599,7 +699,7 @@ module Rpdfium
     # la matrice di trasformazione. `parent` = handle (FPDF_PAGE alla radice o
     # FPDF_PAGEOBJECT per i form xobjects). `page_object: true` se parent è un
     # form xobject.
-    def collect_line_segments(parent, ctm, page_h, include_curves, out, page_object:)
+    def collect_line_segments(parent, ctm, rotation_ctx, include_curves, out, page_object:)
       n = if page_object
             Raw.FPDFFormObj_CountObjects(parent)
           else
@@ -617,29 +717,23 @@ module Rpdfium
         type = Raw.FPDFPageObj_GetType(obj)
         case type
         when Raw::PAGEOBJ_PATH
-          extract_path_segments(obj, ctm, page_h, include_curves, out)
+          extract_path_segments(obj, ctm, rotation_ctx, include_curves, out)
         when Raw::PAGEOBJ_FORM
           # Discendi nel form xobject componendo la sua matrice col CTM
           child_ctm = compose_matrix(ctm, read_object_matrix(obj))
-          collect_line_segments(obj, child_ctm, page_h, include_curves, out,
+          collect_line_segments(obj, child_ctm, rotation_ctx, include_curves, out,
                                 page_object: true)
         end
       end
     end
 
-    def extract_path_segments(obj, ctm, page_h, include_curves, out)
-      # Skip oggetti inattivi (visibili = false, es. layer disabilitati).
-      # Su PDF normali è always-active, ma su PDF con Optional Content
-      # / OCG questo filtra livelli nascosti.
+    def extract_path_segments(obj, ctm, rotation_ctx, include_curves, out)
       return unless object_active?(obj)
 
       stroke_width = read_stroke_width(obj)
       dash_count = read_dash_count(obj)
       dashed = dash_count > 0
 
-      # Comporre la matrice del path object stesso col CTM corrente.
-      # I path objects HANNO una propria matrice (oltre a quella del
-      # form parent), che pdfium applica automaticamente al rendering.
       path_ctm = compose_matrix(ctm, read_object_matrix(obj))
 
       seg_count = Raw.FPDFPath_CountSegments(obj)
@@ -653,7 +747,6 @@ module Rpdfium
         x_buf = FFI::MemoryPointer.new(:float)
         y_buf = FFI::MemoryPointer.new(:float)
         Raw.FPDFPathSegment_GetPoint(seg, x_buf, y_buf)
-        # Coordinate nello spazio "del path", da trasformare al sistema-pagina
         local_x = x_buf.read_float
         local_y = y_buf.read_float
         x, y = apply_matrix(path_ctm, local_x, local_y)
@@ -665,12 +758,12 @@ module Rpdfium
           current = [x, y]
           first_in_subpath = current.dup
         when Raw::SEGMENT_LINETO
-          out << build_segment(current[0], current[1], x, y, page_h,
+          out << build_segment(current[0], current[1], x, y, rotation_ctx,
                                 stroke_width, dashed: dashed) if current
           current = [x, y]
         when Raw::SEGMENT_BEZIERTO
           if include_curves && current
-            out << build_segment(current[0], current[1], x, y, page_h,
+            out << build_segment(current[0], current[1], x, y, rotation_ctx,
                                   stroke_width, dashed: dashed)
                     .merge(curve: true)
           end
@@ -680,7 +773,7 @@ module Rpdfium
         if closes && current && first_in_subpath
           out << build_segment(current[0], current[1],
                                 first_in_subpath[0], first_in_subpath[1],
-                                page_h, stroke_width, dashed: dashed)
+                                rotation_ctx, stroke_width, dashed: dashed)
           current = first_in_subpath.dup
         end
       end
@@ -1080,13 +1173,41 @@ module Rpdfium
       buf.read_float
     end
 
-    def build_segment(x0, y0, x1, y1, page_h, stroke_width, dashed: false)
+    # Costruisce un segmento dalla coppia di endpoint nello spazio raw
+    # PDFium (bottom-up, pre-rotazione). Applica la rotazione della pagina
+    # per restituire coord top-down nel sistema post-rotation, coerente
+    # con il sistema usato da `chars`.
+    def build_segment(x0, y0, x1, y1, rotation_ctx, stroke_width, dashed: false)
+      r = rotation_ctx[:rotation]
+      raw_w = rotation_ctx[:raw_w]
+      raw_h = rotation_ctx[:raw_h]
+
+      nx0, ny0 = apply_page_rotation_to_point(r, raw_w, raw_h, x0, y0)
+      nx1, ny1 = apply_page_rotation_to_point(r, raw_w, raw_h, x1, y1)
+
       {
-        x0: x0, y0: page_h - y0,
-        x1: x1, y1: page_h - y1,
+        x0: nx0, y0: ny0,
+        x1: nx1, y1: ny1,
         stroke_width: stroke_width,
         dashed: dashed
       }
+    end
+
+    # Trasforma un singolo punto (x, y) dal sistema raw PDFium (bottom-up)
+    # al sistema top-down post-rotation della pagina.
+    def apply_page_rotation_to_point(rotation, raw_w, raw_h, x, y)
+      case rotation
+      when 0, nil
+        [x, raw_h - y]              # bottom-up → top-down
+      when 90
+        [y, x]                       # 90° CW
+      when 180
+        [raw_w - x, y]
+      when 270
+        [raw_h - y, raw_w - x]
+      else
+        [x, raw_h - y]
+      end
     end
 
     # Raggruppa elementi consecutivi se un blocco li considera equivalenti.

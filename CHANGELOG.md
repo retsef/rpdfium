@@ -3,6 +3,81 @@
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [0.3.8] - supporto pagine ruotate (90°, 180°, 270°)
+
+### Risolto: estrazione completamente errata su PDF con `Page#rotation != 0`
+
+Su PDF con pagine ruotate (esempio: CU Banca d'Italia, certificate
+ruotate 90° CW per essere visualizzate landscape ma "logicamente"
+portrait), `Page#chars` ritornava bbox nel sistema **raw** PDFium
+(pre-rotazione), mentre PDFium stesso esponeva `width`/`height`
+**post-rotazione**. Il mismatch causava:
+
+- `top` dei char tutti uguali nella stessa colonna ma `top` diverso
+  tra char della stessa parola (perché il testo era "verticale" nel
+  sistema raw)
+- L'estrazione tabelle produceva celle illeggibili: testo letto
+  carattere per carattere a rovescio (`.A/.P/.S/O/R/O/V/A/L/L/E/D/E/L/A`
+  invece di `BANCA NAZIONALE DEL LAVORO S.P.A.`)
+- I segmenti di linea (`line_segments`) erano nel sistema raw, mentre
+  i char erano (parzialmente) nel sistema post-rotation, rendendo
+  impossibile il match cellule/contenuti
+
+### Fix
+
+Tre interventi simmetrici per uniformare il sistema di coordinate:
+
+1. **`compute_chars`**: applica la rotazione della pagina a ogni bbox di
+   char (e all'origin point) prima di restituirli. Le coord sono ora
+   sempre top-down nel sistema della pagina post-rotazione, allineate
+   col rendering visivo. Coerente con pdfplumber.
+
+2. **`line_segments`**: stesso trattamento agli endpoint dei segmenti.
+   Il `build_segment` ora riceve un `rotation_ctx` invece del solo
+   `page_h`, e trasforma entrambi i punti del segmento.
+
+3. **Helper `apply_page_rotation_to_char` e `apply_page_rotation_to_point`**:
+   centralizzano la matematica delle 4 rotazioni canoniche (0°, 90° CW,
+   180°, 270° CW). Per rotation = 0 il comportamento è identico al pre-
+    0.3.8 (semplice bottom-up → top-down).
+
+### Verifica
+
+Test di non-regressione su 4 PDF:
+
+| PDF | Rotation | Risultato |
+| --- | -------: | --------- |
+| busta_paga.pdf (cedolino TeamSystem) | 0° | Invariato — tutti i valori critici (`1.993,00`, `COGNOME E NOME`, `NETTO BUSTA`) preservati |
+| sample.pdf | 0° | Invariato (Lorem ipsum, 2913 char) |
+| complex.pdf (85 pag) | 0° | Invariato (224.645 char totali) |
+| **cu.pdf (CR Banca d'Italia, 226 pag)** | **90° CW** | **Estrazione ora corretta** |
+
+Esempio CU pagina 1 dopo il fix:
+
+```
+=== Tabella 0 ===
+  ['ntermediario:', 'BANCA NAZIONALE DEL LAVORO S.P.A.']
+
+=== Tabella 1 ===
+  Header: ['Categoria', 'Localizzazione', 'Durata/Residua', 'Divisa',
+           'Import Export', 'Tipo Attività', 'Stato Rapporto',
+           'Tipo/Garanzia', 'Ruolo/Affidato', 'Accordato',
+           'Accordato/Operativo', 'Utilizzato', 'Importo/Garantito']
+  Row 1:  ['RISCHI/AUTOLIQUIDANTI', 'TERMOLI', 'FINO A 1/ANNO', ...,
+           '0', '172.136', '172.136', '172.136', '0']
+```
+
+Coincide cella-per-cella con pdfplumber sullo stesso PDF.
+
+### API: nessuna breaking change
+
+Le API pubbliche `Page#chars`, `Page#words`, `Page#text`,
+`Page#line_segments`, `Page#extract_tables` mantengono la stessa
+firma. I valori restituiti **cambiano per i PDF ruotati**: prima
+erano in coord raw (sbagliate), ora in coord post-rotation (corrette,
+allineate al rendering visivo). Per PDF con rotation = 0 (la stragrande
+maggioranza) non c'è alcuna differenza.
+
 ## [0.3.7] - bugfix critico: buffer overrun in `read_text_obj_text_from`
 
 ### Risolto: IndexError "Memory access offset=0 size=N out of bounds"
