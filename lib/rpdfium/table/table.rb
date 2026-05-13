@@ -17,11 +17,14 @@ module Rpdfium
       end
 
       def bbox
-        x0 = @cells.map { |c| c[0] }.min
-        top = @cells.map { |c| c[1] }.min
-        x1 = @cells.map { |c| c[2] }.max
-        bottom = @cells.map { |c| c[3] }.max
-        [x0, top, x1, bottom]
+        @cells.each_with_object(
+          [Float::INFINITY, Float::INFINITY, -Float::INFINITY, -Float::INFINITY]
+        ) do |c, acc|
+          acc[0] = c[0] if c[0] < acc[0]
+          acc[1] = c[1] if c[1] < acc[1]
+          acc[2] = c[2] if c[2] > acc[2]
+          acc[3] = c[3] if c[3] > acc[3]
+        end
       end
 
       # Restituisce le righe come Array<Array<bbox|nil>>. Le celle "mancanti"
@@ -91,12 +94,14 @@ module Rpdfium
       end
 
       def row_bounding_box(row)
-        non_nil = row.compact
-        x0 = non_nil.map { |c| c[0] }.min
-        top = non_nil.map { |c| c[1] }.min
-        x1 = non_nil.map { |c| c[2] }.max
-        bottom = non_nil.map { |c| c[3] }.max
-        [x0, top, x1, bottom]
+        row.compact.each_with_object(
+          [Float::INFINITY, Float::INFINITY, -Float::INFINITY, -Float::INFINITY]
+        ) do |c, acc|
+          acc[0] = c[0] if c[0] < acc[0]
+          acc[1] = c[1] if c[1] < acc[1]
+          acc[2] = c[2] if c[2] > acc[2]
+          acc[3] = c[3] if c[3] > acc[3]
+        end
       end
 
       # Ricostruisce righe o colonne. axis 0 = x (per row clustering antiaxis=top),

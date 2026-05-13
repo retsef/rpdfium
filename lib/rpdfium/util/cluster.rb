@@ -70,11 +70,14 @@ module Rpdfium
       # bbox = [x0, top, x1, bottom] (top-down). Ritorna la bbox che racchiude
       # tutti gli oggetti passati. Usa min/max di x0/top/x1/bottom.
       def objects_to_bbox(objects)
-        x0 = objects.map { |o| o[:x0] }.min
-        top = objects.map { |o| o[:top] }.min
-        x1 = objects.map { |o| o[:x1] }.max
-        bottom = objects.map { |o| o[:bottom] }.max
-        [x0, top, x1, bottom]
+        objects.each_with_object(
+          [Float::INFINITY, Float::INFINITY, -Float::INFINITY, -Float::INFINITY]
+        ) do |o, acc|
+          acc[0] = o[:x0]     if o[:x0]     < acc[0]
+          acc[1] = o[:top]    if o[:top]    < acc[1]
+          acc[2] = o[:x1]     if o[:x1]     > acc[2]
+          acc[3] = o[:bottom] if o[:bottom] > acc[3]
+        end
       end
 
       # Variante che ritorna un Hash invece di tuple — comoda nel contesto

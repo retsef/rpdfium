@@ -152,10 +152,8 @@ module Rpdfium
         large = sorted.select { |c| c.size >= word_threshold }
         bboxes = large.map { |c| Util::Cluster.objects_to_bbox(c) }
 
-        condensed_bboxes = []
-        bboxes.each do |b|
-          overlap = condensed_bboxes.any? { |c| Util::Cluster.bbox_overlaps?(b, c) }
-          condensed_bboxes << b unless overlap
+        condensed_bboxes = bboxes.each_with_object([]) do |b, acc|
+          acc << b unless acc.any? { |c| Util::Cluster.bbox_overlaps?(b, c) }
         end
         return [] if condensed_bboxes.empty?
 
@@ -164,9 +162,13 @@ module Rpdfium
           { x0: b[0], top: b[1], x1: b[2], bottom: b[3] }
         end.sort_by { |r| r[:x0] }
 
-        max_x1 = condensed_rects.map { |r| r[:x1] }.max
-        min_top = condensed_rects.map { |r| r[:top] }.min
-        max_bottom = condensed_rects.map { |r| r[:bottom] }.max
+        max_x1, min_top, max_bottom = condensed_rects.each_with_object(
+          [-Float::INFINITY, Float::INFINITY, -Float::INFINITY]
+        ) do |r, acc|
+          acc[0] = r[:x1]     if r[:x1]     > acc[0]
+          acc[1] = r[:top]    if r[:top]    < acc[1]
+          acc[2] = r[:bottom] if r[:bottom] > acc[2]
+        end
 
         # Edge "left" di ogni colonna + un edge finale "right".
         left_edges = condensed_rects.map do |r|

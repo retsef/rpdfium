@@ -292,18 +292,7 @@ module Rpdfium
       text_obj_cache = {}
 
       n.times do |i|
-        if loose
-          if Raw.FPDFText_GetLooseCharBox(tp.handle, i, rect) == 1
-            x0 = rect[:left]; x1 = rect[:right]
-            y_top = rect[:top]; y_bot = rect[:bottom]
-          else
-            x0 = x1 = y_top = y_bot = 0.0
-          end
-        else
-          Raw.FPDFText_GetCharBox(tp.handle, i, l, r, b, t)
-          x0 = l.read_double; x1 = r.read_double
-          y_top = t.read_double; y_bot = b.read_double
-        end
+        x0, x1, y_top, y_bot = read_char_bbox(tp, i, loose, l, r, b, t, rect)
         Raw.FPDFText_GetCharOrigin(tp.handle, i, ox, oy)
         # Font name (best-effort): GetFontInfo è disponibile su tutte le
         # versioni di PDFium ed è il path più portabile a char-level.
@@ -508,6 +497,19 @@ module Rpdfium
     end
 
     private
+
+    def read_char_bbox(tp, i, loose, l, r, b, t, rect)
+      if loose
+        if Raw.FPDFText_GetLooseCharBox(tp.handle, i, rect) == 1
+          [rect[:left], rect[:right], rect[:top], rect[:bottom]]
+        else
+          [0.0, 0.0, 0.0, 0.0]
+        end
+      else
+        Raw.FPDFText_GetCharBox(tp.handle, i, l, r, b, t)
+        [l.read_double, r.read_double, t.read_double, b.read_double]
+      end
+    end
 
     # Matrice identità nello spazio PDF: [1, 0, 0, 1, 0, 0]
     # (a, b, c, d, e, f) → (x', y') = (a*x + c*y + e,  b*x + d*y + f)

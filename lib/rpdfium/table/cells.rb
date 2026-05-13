@@ -28,17 +28,17 @@ module Rpdfium
         # confrontando bbox degli edge — noi abbiamo accesso diretto agli
         # oggetti edge dentro `intersections[pt]`, basta usare l'identity.
         # Per "stesso edge" usiamo `equal?` (identità d'oggetto).
+        edge_ids = intersections.transform_values do |val|
+          { v: val[:v].map(&:object_id).to_set,
+            h: val[:h].map(&:object_id).to_set }
+        end
+
         edge_connects = lambda do |p1, p2|
           if p1[0] == p2[0]
-            # Stessa x: cerco un edge verticale comune
-            v1 = intersections[p1][:v]
-            v2 = intersections[p2][:v]
-            return v1.any? { |e1| v2.any? { |e2| e1.equal?(e2) } }
+            return !(edge_ids[p1][:v] & edge_ids[p2][:v]).empty?
           end
           if p1[1] == p2[1]
-            h1 = intersections[p1][:h]
-            h2 = intersections[p2][:h]
-            return h1.any? { |e1| h2.any? { |e2| e1.equal?(e2) } }
+            return !(edge_ids[p1][:h] & edge_ids[p2][:h]).empty?
           end
           false
         end
@@ -99,25 +99,18 @@ module Rpdfium
 
         remaining = cells.dup
         tables = []
-        current_corners = []
+        current_corners = Set.new
         current_cells = []
 
         until remaining.empty?
           initial_count = current_cells.size
           remaining.dup.each do |cell|
             corners = bbox_to_corners.call(cell)
-            if current_cells.empty?
-              current_corners.concat(corners)
-              current_cells << cell
-              remaining.delete(cell)
-            else
-              shared = corners.count { |c| current_corners.include?(c) }
-              next unless shared.positive?
+            next unless current_cells.empty? || corners.any? { |c| current_corners.include?(c) }
 
-              current_corners.concat(corners)
-              current_cells << cell
-              remaining.delete(cell)
-            end
+            current_corners.merge(corners)
+            current_cells << cell
+            remaining.delete(cell)
           end
 
           # Se non abbiamo aggiunto nulla in questa iterazione, chiudiamo il gruppo

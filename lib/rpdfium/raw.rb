@@ -93,7 +93,7 @@ module Rpdfium
       end
     end
 
-    if !@native_loaded
+    unless @native_loaded
       # Override di attach_function quando la libreria non si è caricata:
       # non chiamare super (che esploderebbe), genera direttamente lo stub.
       def self.attach_function(name, *_args)

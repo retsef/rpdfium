@@ -146,8 +146,8 @@ module Rpdfium
         words = nil
         words = page_words if v_strat == :text || h_strat == :text
 
-        v_base = v_edges_for_strategy(v_strat, words)
-        h_base = h_edges_for_strategy(h_strat, words)
+        v_base = edges_for_strategy(:v, v_strat, words)
+        h_base = edges_for_strategy(:h, h_strat, words)
 
         v_explicit = explicit_v_edges
         h_explicit = explicit_h_edges
@@ -174,31 +174,15 @@ module Rpdfium
         ).extract_words(chars)
       end
 
-      def v_edges_for_strategy(strat, words)
+      def edges_for_strategy(axis, strat, words)
         case strat
         when :lines, :lines_strict
-          page_vertical_edges(strict: strat == :lines_strict)
+          axis == :v ? page_vertical_edges(strict: strat == :lines_strict)
+            : page_horizontal_edges(strict: strat == :lines_strict)
         when :text
-          Edges.words_to_edges_v(
-            words || [],
-            word_threshold: @settings[:min_words_vertical]
-          )
-        when :explicit
-          []
-        end
-      end
-
-      def h_edges_for_strategy(strat, words)
-        case strat
-        when :lines, :lines_strict
-          page_horizontal_edges(strict: strat == :lines_strict)
-        when :text
-          Edges.words_to_edges_h(
-            words || [],
-            word_threshold: @settings[:min_words_horizontal]
-          )
-        when :explicit
-          []
+          axis == :v ? Edges.words_to_edges_v(words || [], word_threshold: @settings[:min_words_vertical])
+            : Edges.words_to_edges_h(words || [], word_threshold: @settings[:min_words_horizontal])
+        when :explicit then []
         end
       end
 
