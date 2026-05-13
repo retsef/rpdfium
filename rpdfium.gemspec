@@ -5,8 +5,8 @@ require_relative "lib/rpdfium/version"
 Gem::Specification.new do |spec|
   spec.name          = "rpdfium"
   spec.version       = Rpdfium::VERSION
-  spec.authors       = ["Your Name"]
-  spec.email         = ["you@example.com"]
+  spec.authors       = ["Roberto Scinocca"]
+  spec.email         = ["roberto.scinocca@hey.com"]
 
   spec.summary       = "Ruby bindings for PDFium with table extraction"
   spec.description   = <<~DESC
@@ -16,7 +16,7 @@ Gem::Specification.new do |spec|
     extraction, annotations, AcroForm fields, page rendering, and
     pdfplumber-style table detection. Inspired by pypdfium2 and pdfplumber.
   DESC
-  spec.homepage      = "https://github.com/yourname/rpdfium"
+  spec.homepage      = "https://github.com/retsef/rpdfium"
   spec.license       = "Apache-2.0"
   spec.required_ruby_version = ">= 3.0.0"
 

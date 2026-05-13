@@ -3,6 +3,10 @@
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [0.3.5] - Ottimizzazioni
+
+### Migliorato: ridotta computazione e semplificati branch condizionali
+
 ## [0.3.4] - advance del glifo, identità text-object, segnale fine-token
 
 ### Aggiunto: bindings e nuove proprietà sui char
