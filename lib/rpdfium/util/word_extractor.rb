@@ -101,17 +101,21 @@ module Rpdfium
       end
 
       def build_word(chars)
-        text = chars.map { |c| c[:char] }.join
-        x0 = chars.map { |c| c[:x0] }.min
-        x1 = chars.map { |c| c[:x1] }.max
-        top = chars.map { |c| c[:top] }.min
-        bottom = chars.map { |c| c[:bottom] }.max
-        word = {
-          text: text,
-          x0: x0, x1: x1, top: top, bottom: bottom,
-          chars: chars
-        }
-        # Riporta extra_attrs dal primo char (sono uniformi nella word)
+        text   = +""
+        x0     =  Float::INFINITY
+        x1     = -Float::INFINITY
+        top    =  Float::INFINITY
+        bottom = -Float::INFINITY
+
+        chars.each do |c|
+          text   << c[:char]
+          x0     = c[:x0]     if c[:x0]     < x0
+          x1     = c[:x1]     if c[:x1]     > x1
+          top    = c[:top]    if c[:top]    < top
+          bottom = c[:bottom] if c[:bottom] > bottom
+        end
+
+        word = { text: text, x0: x0, x1: x1, top: top, bottom: bottom, chars: chars }
         @extra_attrs.each { |a| word[a] = chars.first[a] }
         word
       end

@@ -52,19 +52,20 @@ module Rpdfium
 
         accessor = key_fn.is_a?(Symbol) ? ->(o) { o[key_fn] } : key_fn
 
-        # Raccolgo (valore, oggetto), ordino per valore, raggruppo come in cluster_list
-        pairs = objects.map { |o| [accessor.call(o), o] }
-        sorted = pairs.sort_by(&:first)
-
+        sorted = objects.sort_by { |o| accessor.call(o) }
+        last_key = accessor.call(sorted.first)
         clusters = [[sorted.first]]
-        sorted[1..].each do |pair|
-          if (pair.first - clusters.last.last.first).abs <= tolerance
-            clusters.last << pair
+
+        sorted[1..].each do |obj|
+          curr_key = accessor.call(obj)
+          if (curr_key - last_key).abs <= tolerance
+            clusters.last << obj
           else
-            clusters << [pair]
+            clusters << [obj]
           end
+          last_key = curr_key
         end
-        clusters.map { |group| group.map(&:last) }
+        clusters
       end
 
       # bbox = [x0, top, x1, bottom] (top-down). Ritorna la bbox che racchiude

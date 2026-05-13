@@ -46,15 +46,26 @@ module Rpdfium
         points = intersections.keys.sort
         npoints = points.size
 
+        # Indici spaziali: precomputa punti per colonna (stessa x) e per riga
+        # (stessa y), già ordinati perché `points` è sorted.
+        # Permette lookup O(log n) via bsearch invece di O(n) via select.
+        by_x = Hash.new { |h, k| h[k] = [] }
+        by_y = Hash.new { |h, k| h[k] = [] }
+        points.each { |p| by_x[p[0]] << p; by_y[p[1]] << p }
+
         cells = []
         points.each_with_index do |pt, i|
           next if i == npoints - 1
 
-          rest = points[(i + 1)..]
           # Punti direttamente sotto `pt` (stessa x, y maggiore)
-          below = rest.select { |q| q[0] == pt[0] }
+          col = by_x[pt[0]]
+          below_start = col.bsearch_index { |q| q[1] > pt[1] } || col.size
+          below = col[below_start..]
+
           # Punti direttamente a destra di `pt` (stessa y, x maggiore)
-          right = rest.select { |q| q[1] == pt[1] }
+          row_pts = by_y[pt[1]]
+          right_start = row_pts.bsearch_index { |q| q[0] > pt[0] } || row_pts.size
+          right = row_pts[right_start..]
 
           # Cerca il PRIMO (== più piccolo per via dell'ordinamento) bottom-right
           # i cui 4 corner sono presenti e gli edge connettono.
@@ -92,11 +103,6 @@ module Rpdfium
       def cells_to_tables(cells)
         return [] if cells.empty?
 
-        bbox_to_corners = lambda do |bbox|
-          x0, top, x1, bottom = bbox
-          [[x0, top], [x0, bottom], [x1, top], [x1, bottom]]
-        end
-
         remaining = cells.dup
         tables = []
         current_corners = Set.new
@@ -104,14 +110,19 @@ module Rpdfium
 
         until remaining.empty?
           initial_count = current_cells.size
-          remaining.dup.each do |cell|
-            corners = bbox_to_corners.call(cell)
-            next unless current_cells.empty? || corners.any? { |c| current_corners.include?(c) }
+          next_remaining = []
 
-            current_corners.merge(corners)
-            current_cells << cell
-            remaining.delete(cell)
+          remaining.each do |cell|
+            x0, top, x1, bottom = cell
+            corners = [[x0, top], [x0, bottom], [x1, top], [x1, bottom]]
+            if current_cells.empty? || corners.any? { |c| current_corners.include?(c) }
+              current_corners.merge(corners)
+              current_cells << cell
+            else
+              next_remaining << cell
+            end
           end
+          remaining = next_remaining
 
           # Se non abbiamo aggiunto nulla in questa iterazione, chiudiamo il gruppo
           if current_cells.size == initial_count

@@ -189,9 +189,11 @@ module Rpdfium
       def edges_to_intersections(edges, x_tolerance: 1.0, y_tolerance: 1.0)
         v_edges, h_edges = edges.partition { |e| e[:orientation] == "v" }
         intersections = {}
+        sorted_v = v_edges.sort_by { |v| [v[:x0], v[:top]] }
+        sorted_h = h_edges.sort_by { |h| [h[:top], h[:x0]] }
 
-        v_edges.sort_by { |v| [v[:x0], v[:top]] }.each do |v|
-          h_edges.sort_by { |h| [h[:top], h[:x0]] }.each do |h|
+        sorted_v.each do |v|
+          sorted_h.each do |h|
             next unless v[:top]    <= h[:top] + y_tolerance
             next unless v[:bottom] >= h[:top] - y_tolerance
             next unless v[:x0]     >= h[:x0]  - x_tolerance
