@@ -92,51 +92,45 @@ module Rpdfium
       end
 
       # Raggruppa celle in tabelle in base ai corner condivisi.
-      # Algoritmo (greedy fixed-point, 1:1 con pdfplumber.cells_to_tables):
-      #   - Inizia un gruppo con la prima cella rimanente; aggiunge tutti i suoi corner.
-      #   - Itera tutte le altre celle: se ne condivide ALMENO UN corner con
-      #     i corner del gruppo corrente, la inserisce e ne aggiunge i corner.
-      #   - Se in un'iterazione non aggiunge nessuna cella nuova, chiude il
-      #     gruppo e ne apre uno nuovo dalla prima cella rimasta.
-      #   - Continua finché ci sono celle.
+      #
+      # Algoritmo: Union-Find (disjoint set) sui corner — O(n α(n)) invece
+      # del greedy fixed-point O(n²) di pdfplumber. Il risultato è identico:
+      # due celle finiscono nello stesso gruppo se condividono almeno un corner.
+      #
       # Filtro finale: scarta tabelle con UNA SOLA cella (rumore).
       def cells_to_tables(cells)
         return [] if cells.empty?
 
-        remaining = cells.dup
-        tables = []
-        current_corners = Set.new
-        current_cells = []
+        n = cells.size
+        parent = Array.new(n) { |i| i }
 
-        until remaining.empty?
-          initial_count = current_cells.size
-          next_remaining = []
+        find = lambda do |i|
+          i = parent[i] = parent[parent[i]] while parent[i] != i
+          i
+        end
+        union = ->(a, b) { parent[find.call(a)] = find.call(b) }
 
-          remaining.each do |cell|
-            x0, top, x1, bottom = cell
-            corners = [[x0, top], [x0, bottom], [x1, top], [x1, bottom]]
-            if current_cells.empty? || corners.any? { |c| current_corners.include?(c) }
-              current_corners.merge(corners)
-              current_cells << cell
-            else
-              next_remaining << cell
-            end
-          end
-          remaining = next_remaining
-
-          # Se non abbiamo aggiunto nulla in questa iterazione, chiudiamo il gruppo
-          if current_cells.size == initial_count
-            tables << current_cells.dup
-            current_cells.clear
-            current_corners.clear
+        # Per ogni corner, raccoglie gli indici delle celle che lo condividono
+        # e le unisce nel medesimo componente.
+        corner_to_cells = Hash.new { |h, k| h[k] = [] }
+        cells.each_with_index do |cell, idx|
+          x0, top, x1, bottom = cell
+          [[x0, top], [x0, bottom], [x1, top], [x1, bottom]].each do |corner|
+            corner_to_cells[corner] << idx
           end
         end
-        tables << current_cells unless current_cells.empty?
+        corner_to_cells.each_value do |idxs|
+          idxs.each_cons(2) { |a, b| union.call(a, b) }
+        end
+
+        # Raggruppa per root del Union-Find
+        groups = Hash.new { |h, k| h[k] = [] }
+        cells.each_with_index { |cell, i| groups[find.call(i)] << cell }
 
         # Sort top-to-bottom, left-to-right; filtra single-cell.
-        tables
-          .sort_by { |t| t.map { |c| [c[1], c[0]] }.min }
-          .reject { |t| t.size <= 1 }
+        groups.values
+              .sort_by { |t| t.map { |c| [c[1], c[0]] }.min }
+              .reject  { |t| t.size <= 1 }
       end
     end
   end

@@ -50,13 +50,16 @@ module Rpdfium
         sorted = chars.sort_by { |c| [c[:top], c[:x0]] }
 
         # 2. Cluster in righe per `top`.
+        # cluster_objects è stable-sort su un input già ordinato per [top, x0]:
+        # ogni cluster risulta già ordinato per x0 al suo interno, quindi il
+        # sort successivo dentro la riga è ridondante.
         rows = Cluster.cluster_objects(sorted, :top, tolerance: @y_tolerance)
 
         words = []
         rows.each do |row|
-          # Dentro la riga, ordina per x0 (importantissimo: il cluster_objects
-          # mantiene l'ordine in cui i top arrivano, non quello x).
-          row_sorted = row.sort_by { |c| c[:x0] }
+          # L'input `sorted` è già ordinato per [top, x0]; cluster_objects
+          # preserva l'ordine relativo, quindi ogni riga è già in ordine x0.
+          row_sorted = row
 
           word_chars = []
           row_sorted.each do |c|

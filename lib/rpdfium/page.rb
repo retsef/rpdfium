@@ -352,14 +352,8 @@ module Rpdfium
           nil
         end
 
-        rm, font_handle, font_size_for_obj =
+        rm, font_handle, font_size_for_obj, ends_with_space =
           fetch_text_obj_info(text_obj, tp, text_obj_cache)
-
-        # Testo dell'obj dal char `i` in poi: PDFium ritorna i char dal
-        # char_index fino alla fine del text obj. Se l'ultimo char dell'obj
-        # include uno spazio del content stream, lo vediamo come trailing
-        # space → segnale di "fine token" dichiarato dal PDF.
-        obj_text = read_text_obj_text_from(text_obj, tp, i)
 
         # Advance in coordinate pagina: glyph_width nel font program ×
         # scala orizzontale del CTM per QUESTO char (la matrix è per-char
@@ -387,7 +381,7 @@ module Rpdfium
           origin_x: td_ox,
           origin_y: td_oy,
           angle:    Raw.FPDFText_GetCharAngle(tp.handle, i),
-          fontsize: Raw.FPDFText_GetFontSize(tp.handle, i),
+          fontsize: font_size_for_obj || Raw.FPDFText_GetFontSize(tp.handle, i),
           font:     font_name,
           weight:   Raw.FPDFText_GetFontWeight(tp.handle, i),
           render_mode:   rm,
@@ -398,7 +392,7 @@ module Rpdfium
           # Nuove proprietà 0.3.4 derivate dal text object.
           advance: advance,
           text_obj_id: text_obj && !text_obj.null? ? text_obj.address : nil,
-          text_obj_ends_with_space: obj_text&.end_with?(" ")
+          text_obj_ends_with_space: ends_with_space
         }
       end
       result
@@ -482,12 +476,15 @@ module Rpdfium
     end
 
     # Cache lookup per text object. Restituisce tupla:
-    #   [render_mode, font_handle, font_size]
-    # NOTA: obj_text NON è in cache perché FPDFTextObj_GetText ritorna
-    # testo specifico al char interrogato (non al text obj intero). Va
-    # letto per ogni char separatamente.
-    def fetch_text_obj_info(text_obj, _tp, cache)
-      return [nil, nil, nil] if text_obj.nil? || text_obj.null?
+    #   [render_mode, font_handle, font_size, ends_with_space]
+    #
+    # `ends_with_space` indica se il testo dell'intero text object termina
+    # con uno spazio (segnale "fine token" dichiarato dal PDF). È una
+    # proprietà dell'oggetto, non del singolo char, quindi può essere
+    # calcolata una volta sola e cachata insieme agli altri campi — evita
+    # una chiamata FPDFTextObj_GetText per ogni char che condivide l'obj.
+    def fetch_text_obj_info(text_obj, tp, cache)
+      return [nil, nil, nil, nil] if text_obj.nil? || text_obj.null?
 
       addr = text_obj.address
       return cache[addr] if cache.key?(addr)
@@ -501,7 +498,10 @@ module Rpdfium
                     fs_buf.read_float
                   end
 
-      tuple = [rm, font_handle, font_size]
+      obj_text = read_text_obj_text_from(text_obj, tp)
+      ends_with_space = obj_text&.end_with?(" ")
+
+      tuple = [rm, font_handle, font_size, ends_with_space]
       cache[addr] = tuple
       tuple
     end

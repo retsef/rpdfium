@@ -186,18 +186,31 @@ module Rpdfium
       # un'intersezione `(v.x0, h.top)` con i puntatori agli edge sorgenti.
       # Il valore in `intersections[(x, y)] = { v: [...], h: [...] }` permette
       # poi al cell-builder di verificare "edge connect".
+      #
+      # Ottimizzazione rispetto al loop naïve O(|v|×|h|): sorted_h è ordinato
+      # per top; per ogni edge verticale si usa bsearch per trovare il primo h
+      # candidato e si esce appena h[:top] supera v[:bottom] + y_tolerance,
+      # riducendo le iterazioni al solo sottoinsieme verticalmente rilevante.
       def edges_to_intersections(edges, x_tolerance: 1.0, y_tolerance: 1.0)
         v_edges, h_edges = edges.partition { |e| e[:orientation] == "v" }
         intersections = {}
         sorted_v = v_edges.sort_by { |v| [v[:x0], v[:top]] }
         sorted_h = h_edges.sort_by { |h| [h[:top], h[:x0]] }
+        h_tops = sorted_h.map { |h| h[:top] }
 
         sorted_v.each do |v|
-          sorted_h.each do |h|
-            next unless v[:top]    <= h[:top] + y_tolerance
-            next unless v[:bottom] >= h[:top] - y_tolerance
-            next unless v[:x0]     >= h[:x0]  - x_tolerance
-            next unless v[:x0]     <= h[:x1]  + x_tolerance
+          v_top_min = v[:top]    - y_tolerance
+          v_top_max = v[:bottom] + y_tolerance
+
+          # Salta tutti gli h il cui top è ancora sotto la finestra verticale.
+          start_idx = h_tops.bsearch_index { |t| t >= v_top_min } || sorted_h.size
+
+          sorted_h[start_idx..].each do |h|
+            # Gli h rimanenti sono oltre la finestra: esci subito.
+            break if h[:top] > v_top_max
+
+            next unless v[:x0] >= h[:x0] - x_tolerance
+            next unless v[:x0] <= h[:x1] + x_tolerance
 
             key = [v[:x0], h[:top]]
             entry = intersections[key] ||= { v: [], h: [] }

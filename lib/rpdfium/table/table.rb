@@ -48,6 +48,11 @@ module Rpdfium
       # altre righe vengono scartati subito), poi per ogni cella filtra
       # ancora dentro la sub-bbox.
       #
+      # Ottimizzazione rispetto al path naïve: i char vengono ordinati per
+      # midpoint verticale una sola volta; per ogni riga si usa bsearch per
+      # trovare in O(log n) i char candidati invece di scansionare tutto
+      # l'array O(n) per ogni riga.
+      #
       # NOTA su strategia :text: `words_to_edges_h` emette per design DUE
       # edges per riga (top e bottom della bbox del cluster). Significa che
       # una tabella detectata da text-strategy avrà righe "vere" intervallate
@@ -59,9 +64,21 @@ module Rpdfium
                   y_tolerance: Util::WordExtractor::DEFAULT_Y_TOLERANCE,
                   keep_blank_chars: false)
         chars = @page.chars
-        rows.map do |row|
+
+        # Ordina per midpoint verticale una volta sola; costruisce un array
+        # parallelo di vmid per bsearch. Costo: O(n log n) una tantum.
+        sorted_chars = chars.sort_by { |c| (c[:top] + c[:bottom]) / 2.0 }
+        vmids = sorted_chars.map { |c| (c[:top] + c[:bottom]) / 2.0 }
+
+        all_rows = rows
+        all_rows.map do |row|
           row_bbox = row_bounding_box(row)
-          row_chars = chars.select { |c| char_in_bbox?(c, row_bbox) }
+          # Slice verticale: tutti i char il cui midpoint cade in [row_bbox[1], row_bbox[3]).
+          # bsearch_index è O(log n) invece di select O(n).
+          lo = vmids.bsearch_index { |v| v >= row_bbox[1] } || sorted_chars.size
+          hi = vmids.bsearch_index { |v| v >= row_bbox[3] } || sorted_chars.size
+          row_chars = sorted_chars[lo...hi]
+
           row.map do |cell|
             next nil if cell.nil?
 
