@@ -60,9 +60,22 @@ module Rpdfium
       # riga N+1. Questo è identico al comportamento di pdfplumber. Il
       # caller può filtrare via `result.reject { |row| row.all?(&:empty?) }`
       # se vuole eliminarle.
+      # `cell_padding`: estende il bbox di ogni cella verso sinistra e verso
+      # l'alto di N punti. Default 0 (= comportamento pdfplumber identico).
+      # Utile per PDF dove i char sporgono leggermente dal bordo della cella
+      # (es. la "I" maiuscola della cella "Intermediario" in CR Banca d'Italia
+      # ha x0=24.0 ma il bordo della cella è a x=25.6 — viene scartata dal
+      # filtro midpoint, output "ntermediario:"). Con `cell_padding: 2.0` la
+      # cella diventa [23.6, ..., 100, ...] e la "I" viene catturata.
+      #
+      # Padding solo sui bordi "interno-sinistro" e "interno-alto" per
+      # evitare di duplicare char condivisi tra celle adiacenti (un char tra
+      # cella A e cella B finirebbe in entrambe se entrambe paddassero su
+      # tutti i lati).
       def extract(x_tolerance: Util::WordExtractor::DEFAULT_X_TOLERANCE,
                   y_tolerance: Util::WordExtractor::DEFAULT_Y_TOLERANCE,
-                  keep_blank_chars: false)
+                  keep_blank_chars: false,
+                  cell_padding: 0.0)
         chars = @page.chars
 
         # Ordina per midpoint verticale una volta sola; costruisce un array
@@ -75,14 +88,18 @@ module Rpdfium
           row_bbox = row_bounding_box(row)
           # Slice verticale: tutti i char il cui midpoint cade in [row_bbox[1], row_bbox[3]).
           # bsearch_index è O(log n) invece di select O(n).
-          lo = vmids.bsearch_index { |v| v >= row_bbox[1] } || sorted_chars.size
+          # Estendiamo lo slice anche di cell_padding sopra per non perdere
+          # char che padding-shifterebbero dentro.
+          lo = vmids.bsearch_index { |v| v >= row_bbox[1] - cell_padding } || sorted_chars.size
           hi = vmids.bsearch_index { |v| v >= row_bbox[3] } || sorted_chars.size
           row_chars = sorted_chars[lo...hi]
 
           row.map do |cell|
             next nil if cell.nil?
 
-            cell_chars = row_chars.select { |c| char_in_bbox?(c, cell) }
+            # Estendi il bbox della cella per il filtro midpoint.
+            padded = cell_padding.zero? ? cell : pad_cell_bbox(cell, cell_padding)
+            cell_chars = row_chars.select { |c| char_in_bbox?(c, padded) }
             if cell_chars.empty?
               ""
             else
@@ -98,6 +115,13 @@ module Rpdfium
       end
 
       private
+
+      def pad_cell_bbox(bbox, padding)
+        x0, top, x1, bottom = bbox
+        # Estendi solo i bordi "interno-sinistro" e "interno-alto" per evitare
+        # di catturare char della cella adiacente destra/sotto.
+        [x0 - padding, top - padding, x1, bottom]
+      end
 
       # Test "char midpoint dentro bbox" — esattamente come pdfplumber.
       # Il midpoint del char (non gli estremi della bbox) è il criterio:

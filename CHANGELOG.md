@@ -3,6 +3,62 @@
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [0.3.11] - opzione `cell_padding` per char fuori bordo cella
+
+### Aggiunto: `Table#extract(cell_padding: N)` per recuperare char border-line
+
+Su alcuni PDF (CR Banca d'Italia, header tabelle) il primo char di una
+cella è disegnato **leggermente fuori** dal bordo della cella stessa.
+Esempio: la `I` maiuscola di "Intermediario:" ha `x0=24.0` ma la
+cella inizia a `x=25.6` (la `I` sporge di 1.6 punti a sinistra del
+bordo). Il filtro midpoint (identico a pdfplumber) calcola `h_mid =
+25.25` e esclude la `I` perché < 25.6, producendo `"ntermediario:"`.
+
+Pdfplumber ha **esattamente lo stesso problema** (verificato sul PDF):
+il midpoint filter è una decisione di design comune. Però noi possiamo
+offrire una via di mezzo.
+
+### Nuova API
+
+```ruby
+table.extract                       # default: pdfplumber-compat
+table.extract(cell_padding: 2.0)    # recupera char che sporgono fino
+                                    # a 2pt fuori dai bordi sinistro/alto
+```
+
+`cell_padding` estende il bbox di ogni cella verso **sinistra** e
+verso l'**alto** di N punti prima di applicare il filtro midpoint.
+Default 0.0 = comportamento identico a prima (e a pdfplumber).
+
+Il padding è asimmetrico (solo bordi sinistro/alto, non destro/basso)
+per evitare di catturare char condivisi con celle adiacenti: se
+entrambe le celle vicine espandessero su tutti i lati, un char tra
+loro finirebbe in entrambe. Limitando il padding ai bordi "interno-
+sinistro" e "interno-alto" un char fuori-bordo-sinistro finisce solo
+nella cella alla sua destra, dove probabilmente appartiene.
+
+### Risultato sul PDF problematico
+
+```
+ext = Rpdfium::Table::Extractor.new(page, ...)
+ext.tables.first.extract                       # → ["ntermediario:", "BANCA NAZIONALE..."]
+ext.tables.first.extract(cell_padding: 2.0)    # → ["Intermediario:", "BANCA NAZIONALE..."]
+```
+
+### Test di non-regressione
+
+Tutti i PDF di test continuano a funzionare correttamente con cell_padding
+default (0.0):
+
+- ✅ busta_paga.pdf (numeri, parole con spazi, NETTO BUSTA)
+- ✅ cu.pdf pag. 1 (rotation 90°): Categoria, RISCHI AUTOLIQUIDANTI, 172.136
+- ✅ cu.pdf pag. 199 (rotation 0°, font piccolo): Categoria, Tipo Attività
+- ✅ sample.pdf (Lorem ipsum) + complex.pdf (>200k char)
+
+Con `cell_padding: 2.0` su cu.pdf pag. 1:
+- ✅ "Intermediario:" recuperato per intero
+- ✅ Nessun valore numerico duplicato (172.136 appare 3 volte come atteso)
+
 ## [0.3.10] - bugfix: ordine char nelle celle con `top` quasi-uguale
 
 ### Risolto: parole scrambled tipo `iCategora` invece di `Categoria`
