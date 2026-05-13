@@ -71,6 +71,27 @@ module Rpdfium
         right: r.read_float, top: t.read_float }
     end
 
+    # Accessor pdfplumber-compatibili. Restituiscono il box come tuple
+    # [x0, top, x1, bottom] in coordinate top-down (lo stesso sistema
+    # usato da chars, edges, table cells). Ritornano nil se il box non
+    # è definito nel PDF (es. ArtBox o BleedBox sono spesso assenti).
+    #
+    # Esempio d'uso:
+    #   crop = page.cropbox        # → [0.0, 0.0, 595.28, 841.88] o nil
+    #   crop != [0, 0, page.width, page.height]  # PDF ha un crop esplicito
+    def mediabox; box_to_topdown(box(:media)); end
+
+    # PDF spec 14.11.2: se CropBox è assente, default è MediaBox. La cropbox è
+    # l'area "visibile" della pagina; per PDF da gestionali coincide spesso
+    # con la MediaBox. Pdfplumber fa il fallback automatico.
+    def cropbox
+      box_to_topdown(box(:crop)) || mediabox
+    end
+
+    def bleedbox; box_to_topdown(box(:bleed)); end
+    def trimbox;  box_to_topdown(box(:trim));  end
+    def artbox;   box_to_topdown(box(:art));   end
+
     # ===== Testo (versione "semplice") =====
 
     def text
@@ -489,11 +510,16 @@ module Rpdfium
     # vedremmo zero linee anche se visivamente la pagina è piena di
     # bordi/separatori. Comportamento allineato a pdfminer.six (e quindi a
     # pdfplumber).
-    def line_segments(include_curves: false)
+    # `include_curves` true: include i Bezier come segmenti (con flag :curve).
+    # `include_dashed` true: include le linee tratteggiate (con flag :dashed).
+    #   Default: false. Le tratteggiate spesso sono "guide" non-visive nei
+    #   template di stampa e confondono la detection cellule tabella. Chi
+    #   le vuole esplicitamente (es. drawing extraction completo) passa true.
+    def line_segments(include_curves: false, include_dashed: false)
       out = []
       collect_line_segments(@state[:handle], identity_matrix, height,
                              include_curves, out, page_object: false)
-      out
+      include_dashed ? out : out.reject { |s| s[:dashed] }
     end
 
     private
@@ -577,7 +603,15 @@ module Rpdfium
     end
 
     def extract_path_segments(obj, ctm, page_h, include_curves, out)
+      # Skip oggetti inattivi (visibili = false, es. layer disabilitati).
+      # Su PDF normali è always-active, ma su PDF con Optional Content
+      # / OCG questo filtra livelli nascosti.
+      return unless object_active?(obj)
+
       stroke_width = read_stroke_width(obj)
+      dash_count = read_dash_count(obj)
+      dashed = dash_count > 0
+
       # Comporre la matrice del path object stesso col CTM corrente.
       # I path objects HANNO una propria matrice (oltre a quella del
       # form parent), che pdfium applica automaticamente al rendering.
@@ -606,11 +640,13 @@ module Rpdfium
           current = [x, y]
           first_in_subpath = current.dup
         when Raw::SEGMENT_LINETO
-          out << build_segment(current[0], current[1], x, y, page_h, stroke_width) if current
+          out << build_segment(current[0], current[1], x, y, page_h,
+                                stroke_width, dashed: dashed) if current
           current = [x, y]
         when Raw::SEGMENT_BEZIERTO
           if include_curves && current
-            out << build_segment(current[0], current[1], x, y, page_h, stroke_width)
+            out << build_segment(current[0], current[1], x, y, page_h,
+                                  stroke_width, dashed: dashed)
                     .merge(curve: true)
           end
           current = [x, y]
@@ -619,10 +655,33 @@ module Rpdfium
         if closes && current && first_in_subpath
           out << build_segment(current[0], current[1],
                                 first_in_subpath[0], first_in_subpath[1],
-                                page_h, stroke_width)
+                                page_h, stroke_width, dashed: dashed)
           current = first_in_subpath.dup
         end
       end
+    end
+
+    # FPDFPageObj_GetIsActive: ritorna true se il page object è marcato
+    # attivo (visibile). Su PDF senza Optional Content, è always-true; su
+    # PDF con layer disabilitati, alcuni obj possono essere inactive.
+    # Fallback: se la binding non c'è o fallisce, consideriamo attivo
+    # (comportamento equivalente alla versione pre-0.3.6).
+    def object_active?(obj)
+      active_buf = FFI::MemoryPointer.new(:int)
+      return true if Raw.FPDFPageObj_GetIsActive(obj, active_buf) == 0
+
+      active_buf.read_int != 0
+    rescue Rpdfium::LoadError
+      true
+    end
+
+    # FPDFPageObj_GetDashCount: numero di elementi del dash array. 0 =
+    # linea continua, > 0 = linea tratteggiata (con N elementi
+    # alternati on/off).
+    def read_dash_count(obj)
+      Raw.FPDFPageObj_GetDashCount(obj)
+    rescue Rpdfium::LoadError
+      0
     end
 
     public
@@ -669,7 +728,79 @@ module Rpdfium
       out
     end
 
-    # ===== Immagini =====
+    # ===== Marked Content (PDF tagged) =====
+
+    # Itera tutti i marked content del page (operatori BDC/BMC del content
+    # stream PDF) raggruppando i page object per il loro mcid (Marked
+    # Content ID). Utile per PDF "tagged" (PDF/UA, esport da Word/InDesign):
+    # un mcid ≥ 0 identifica un'unità semantica (paragrafo, span, figura),
+    # e tutti gli oggetti con lo stesso mcid appartengono allo stesso
+    # tag struttura.
+    #
+    # Ritorna un Hash { mcid (Integer) => Array<page_object_handle> }.
+    # mcid -1 (i page object senza marked content) viene OMESSO.
+    #
+    # Su PDF non tagged (es. la maggior parte dei PDF da gestionali
+    # italiani) l'Hash è vuoto. Su PDF tagged è la fonte di verità per
+    # raggruppare semanticamente char/parole — più affidabile di qualsiasi
+    # euristica geometrica.
+    def marked_content_regions
+      out = Hash.new { |h, k| h[k] = [] }
+      walk_page_objects do |obj, _ctm|
+        mcid = read_marked_content_id(obj)
+        out[mcid] << obj if mcid >= 0
+      end
+      out
+    end
+
+    # Itera tutti i marks (BMC/BDC operators) con i loro nomi e parametri.
+    # Ritorna Array<Hash> con { obj_handle, mark_name, params }.
+    # Per PDF tagged, i mark_name comuni sono: "P" (paragraph),
+    # "Span", "Artifact", "Figure", "TR" (table row), "TD" (table cell).
+    def marked_content_inventory
+      out = []
+      walk_page_objects do |obj, _ctm|
+        mark_count = safely_count_marks(obj)
+        mark_count.times do |mi|
+          mark = Raw.FPDFPageObj_GetMark(obj, mi)
+          next if mark.null?
+
+          out << {
+            obj: obj,
+            mark_name: read_mark_name(mark),
+            params: read_mark_params(mark)
+          }
+        end
+      end
+      out
+    end
+
+    # ===== Links (annotation links + hit-test posizionale) =====
+
+    # Hit-test: ritorna il link annotation che contiene il punto (x, y)
+    # in coordinate top-down della pagina. Restituisce un'istanza di
+    # Annotation o nil.
+    #
+    # Più efficiente di iterare `links` quando si parte da una coordinata
+    # (es. mapping click sul rendering → URL del link). Pdfplumber non
+    # ha equivalente diretto.
+    def link_at(x, y)
+      # PDFium usa coord bottom-up; converto
+      pdf_y = height - y
+      link_handle = Raw.FPDFLink_GetLinkAtPoint(@state[:handle],
+                                                 x.to_f, pdf_y.to_f)
+      return nil if link_handle.null?
+
+      annot_handle = Raw.FPDFLink_GetAnnot(@state[:handle], link_handle)
+      return nil if annot_handle.null?
+
+      # Annotation richiede un index nel page; non lo abbiamo direttamente
+      # qui. Iteriamo le annotation della pagina e troviamo quella col
+      # rect più vicino. Per la maggior parte dei PDF è O(piccolo).
+      annotations.find { |a| a.subtype == :link && annotation_contains?(a, x, y) }
+    end
+
+
 
     def images
       n = Raw.FPDFPage_CountObjects(@state[:handle])
@@ -772,6 +903,124 @@ module Rpdfium
 
     private
 
+    # Converte un box PDFium {left, bottom, right, top} in coord bottom-up
+    # alla tuple top-down [x0, top, x1, bottom] usata dal resto della
+    # libreria. Ritorna nil se il box è nil (box assente sul PDF).
+    # Itera tutti i page object della pagina ricorsivamente (discendendo
+    # nei Form XObjects), passando al block ogni (obj, ctm_corrente).
+    # Stessa logica di walk di collect_line_segments ma astratta — utile
+    # per altre operazioni a livello di obj (marked content, etc).
+    def walk_page_objects(handle = @state[:handle], ctm = identity_matrix,
+                          is_form: false, &block)
+      n = is_form ? Raw.FPDFFormObj_CountObjects(handle) : Raw.FPDFPage_CountObjects(handle)
+      n.times do |i|
+        obj = is_form ? Raw.FPDFFormObj_GetObject(handle, i) : Raw.FPDFPage_GetObject(handle, i)
+        next if obj.null?
+
+        block.call(obj, ctm)
+
+        if Raw.FPDFPageObj_GetType(obj) == Raw::PAGEOBJ_FORM
+          child_ctm = compose_matrix(ctm, read_object_matrix(obj))
+          walk_page_objects(obj, child_ctm, is_form: true, &block)
+        end
+      end
+    end
+
+    def read_marked_content_id(obj)
+      Raw.FPDFPageObj_GetMarkedContentID(obj)
+    rescue Rpdfium::LoadError
+      -1
+    end
+
+    def safely_count_marks(obj)
+      Raw.FPDFPageObj_CountMarks(obj)
+    rescue Rpdfium::LoadError
+      0
+    end
+
+    def read_mark_name(mark)
+      out_len = FFI::MemoryPointer.new(:ulong)
+      name_buf = FFI::MemoryPointer.new(:uint16, 128)
+      return nil if Raw.FPDFPageObjMark_GetName(mark, name_buf, 128 * 2,
+                                                  out_len) == 0
+
+      n_bytes = out_len.read_ulong
+      return nil if n_bytes < 2
+
+      name_buf.read_bytes(n_bytes - 2).force_encoding("UTF-16LE")
+              .encode("UTF-8")
+              .delete("\u0000")
+    end
+
+    def read_mark_params(mark)
+      params = {}
+      count = Raw.FPDFPageObjMark_CountParams(mark)
+      count.times do |pi|
+        key = read_mark_param_key(mark, pi)
+        next if key.nil? || key.empty?
+
+        # Tipo del valore: 0=Null, 1=Int, 2=String, 3=Blob, 4=Dict (ignorato)
+        type = Raw.FPDFPageObjMark_GetParamValueType(mark, key)
+        params[key] = case type
+                       when 1 then read_mark_param_int(mark, key)
+                       when 2, 3 then read_mark_param_string(mark, key)
+                       end
+      end
+      params
+    end
+
+    def read_mark_param_key(mark, index)
+      out_len = FFI::MemoryPointer.new(:ulong)
+      key_buf = FFI::MemoryPointer.new(:uint16, 64)
+      return nil if Raw.FPDFPageObjMark_GetParamKey(mark, index,
+                                                      key_buf, 64 * 2,
+                                                      out_len) == 0
+
+      n_bytes = out_len.read_ulong
+      return nil if n_bytes < 2
+
+      key_buf.read_bytes(n_bytes - 2).force_encoding("UTF-16LE")
+             .encode("UTF-8")
+             .delete("\u0000")
+    end
+
+    def read_mark_param_int(mark, key)
+      buf = FFI::MemoryPointer.new(:int)
+      return nil if Raw.FPDFPageObjMark_GetParamIntValue(mark, key, buf) == 0
+
+      buf.read_int
+    end
+
+    def read_mark_param_string(mark, key)
+      out_len = FFI::MemoryPointer.new(:ulong)
+      val_buf = FFI::MemoryPointer.new(:uint16, 256)
+      return nil if Raw.FPDFPageObjMark_GetParamStringValue(mark, key,
+                                                              val_buf, 256 * 2,
+                                                              out_len) == 0
+
+      n_bytes = out_len.read_ulong
+      return nil if n_bytes < 2
+
+      val_buf.read_bytes(n_bytes - 2).force_encoding("UTF-16LE")
+             .encode("UTF-8")
+             .delete("\u0000")
+    end
+
+    def annotation_contains?(annot, x, y)
+      rect = annot.rect
+      return false unless rect
+
+      x >= rect[:x0] && x <= rect[:x1] && y >= rect[:top] && y <= rect[:bottom]
+    end
+
+    def box_to_topdown(box)
+      return nil unless box
+
+      page_h = height
+      [box[:left], page_h - box[:top],
+       box[:right], page_h - box[:bottom]]
+    end
+
     def safe_codepoint(cp)
       return "" if cp.zero?
       return "" if cp > 0x10FFFF || (0xD800..0xDFFF).cover?(cp)
@@ -788,11 +1037,12 @@ module Rpdfium
       buf.read_float
     end
 
-    def build_segment(x0, y0, x1, y1, page_h, stroke_width)
+    def build_segment(x0, y0, x1, y1, page_h, stroke_width, dashed: false)
       {
         x0: x0, y0: page_h - y0,
         x1: x1, y1: page_h - y1,
-        stroke_width: stroke_width
+        stroke_width: stroke_width,
+        dashed: dashed
       }
     end
 

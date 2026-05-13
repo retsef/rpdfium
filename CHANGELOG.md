@@ -3,6 +3,95 @@
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [0.3.6] - copertura binding pubbliche PDFium
+
+### Aggiunto: 52 binding pubbliche PDFium mancanti
+
+L'inventario sistematico dell'API pubblica PDFium (455 simboli esportati
+dal binario ufficiale) ha rivelato 319 funzioni non ancora attaccate.
+Selezionate 52 ad alto valore per una libreria di estrazione PDF generalista,
+escludendo i setter (mutation), gli event handler form-fill (mouse/keyboard)
+e API niche (thumbnail, JS actions). Tutte sono getter e tutti i tipi
+ritornati sono FFI-safe.
+
+Distribuzione per categoria:
+
+| Categoria              | Binding | Aiuta a... |
+| ---------------------- | ------: | ---------- |
+| Page geometry          | 5       | Sapere mediabox/cropbox/bleed/trim/art (pdfplumber-compat) |
+| PageObject state       | 5       | Filtrare oggetti nascosti, distinguere linee tratteggiate |
+| Marked Content         | 9       | Raggruppare semanticamente char in PDF tagged (PDF/UA) |
+| Catalog/Doc metadata   | 2       | Language, PageMode |
+| Links + hit-test       | 7       | API posizionale `link_at(x, y)`, mapping link → text range |
+| Actions/Destinations   | 6       | Outline navigation completa |
+| Font extras            | 4       | Font data raw, glyph path vettoriale |
+| Text page extras       | 3       | Char ↔ text index mapping per ricerca |
+| Annotation extras      | 7       | Flags/colors/border/AP/file attachment / quad points |
+| Attachment metadata    | 4       | Subtype, key-value custom metadata |
+
+### Nuove API pubbliche di alto livello
+
+- **`Page#mediabox / cropbox / bleedbox / trimbox / artbox`** — accessor
+  pdfplumber-compatibili. Ritornano tuple `[x0, top, x1, bottom]` in
+  coordinate top-down (coerenti con `chars`, `edges`, `cells`). `cropbox`
+  fa fallback automatico su mediabox se assente, come prescrive PDF spec
+  14.11.2. Ritornano `nil` se il box non è definito.
+
+- **`Page#marked_content_regions`** → Hash `{mcid => [page_objects]}`.
+  Raggruppa gli oggetti per Marked Content ID. Vuoto su PDF non-tagged
+  (gestionali italiani); su PDF tagged è il modo più affidabile di
+  ottenere unità semantiche (paragrafi, span, celle tabella).
+
+- **`Page#marked_content_inventory`** → Array di marks con `:obj`,
+  `:mark_name`, `:params`. Per inspection di Tagged PDF (nomi tipici:
+  "Span", "P", "TR", "TD", "Artifact", "Figure").
+
+- **`Page#link_at(x, y)`** — hit-test posizionale: ritorna l'Annotation
+  link che contiene il punto, o `nil`. Per il mapping click sul rendering
+  → URL.
+
+- **`Page#line_segments(include_curves: false, include_dashed: false)`**
+  — nuovo flag `include_dashed`. **Default cambiato a `false`**: le
+  linee tratteggiate sono spesso "guide non-printing" che confondono la
+  detection di cellule tabella. Chi le vuole esplicitamente (drawing
+  extraction completo) passa `include_dashed: true`. I segment hanno
+  ora il campo `:dashed` (bool).
+
+- **PageObject inactive automaticamente skippati** in line_segments:
+  oggetti con Optional Content disabilitato non finiscono più nell'output.
+  Su PDF normali (sempre attivi) il comportamento è invariato.
+
+### Bug fix collaterali
+
+- Rimossa duplicazione di `FPDFText_GetMatrix` (era attached due volte;
+  FFI dava warning ma una sola definizione era effettiva). La binding
+  resta solo nella sezione Text page (riga ~351 di `raw.rb`).
+- Tutti gli helper `read_*` per marked content sono in `begin/rescue
+  Rpdfium::LoadError` per supportare build PDFium più vecchi senza
+  introdurre regressioni.
+
+### Casi border-line text extraction
+
+**Non risolti** sui PDF da gestionali italiani (TeamSystem, Zucchetti):
+parole come `Sede pr i nc` (`Sede principale`), `Imp i ega to`
+(`Impiegato`), `IMPONIBILE INAILMESE` (`IMPONIBILE INAIL MESE`) restano
+spezzate o fuse perché il content stream PDF emette quei char con
+kerning interno (operatori `TJ` con valori intermedi) che PDFium consuma
+internamente per il rendering ma non espone via API C pubblica.
+
+Le binding `FPDFDICT_*` che permetterebbero di accedere al content stream
+raw (e ottenere il kerning, come fa pdfminer.six) **non esistono nel
+PDFium ufficiale di Google/Chromium**. Esistono solo nel fork commerciale
+Pdfium.NET di Patagames Software, non utilizzabile sotto licenza
+open-source. Le 421 simboli `FPDF*` esportati dal binario bblanchon
+sono stati verificati: nessun `FPDFDICT_*`.
+
+I marked content (`FPDFPageObj_GetMark` / `CountMarks`) **sono** la via
+ufficiale per accedere alla struttura semantica, ma richiedono che il
+PDF sia stato generato come Tagged PDF. I PDF da gestionali italiani
+non lo sono. Per PDF da Word/InDesign/InEsign-style tagged, le nuove
+API ora coprono il caso.
+
 ## [0.3.5] - Ottimizzazioni
 
 ### Migliorato: ridotta computazione e semplificati branch condizionali

@@ -126,6 +126,7 @@ module Rpdfium
     typedef :pointer, :FPDF_DEST
     typedef :pointer, :FPDF_ACTION
     typedef :pointer, :FPDF_LINK
+    typedef :pointer, :FPDF_GLYPHPATH
     typedef :pointer, :FPDF_SCHHANDLE
     typedef :pointer, :FPDF_ATTACHMENT
     typedef :pointer, :FPDF_STRUCTTREE
@@ -529,11 +530,10 @@ module Rpdfium
     attach_function :FPDFFont_GetGlyphWidth,
                     %i[FPDF_FONT uint float pointer], :FPDF_BOOL
 
-    # Matrice di trasformazione del char a livello pagina.
-    # Composizione: rendering_matrix = CTM × Tm × text_state. Per testo
-    # non ruotato, `:a` è la scala orizzontale (font_units → page_units).
-    attach_function :FPDFText_GetMatrix,
-                    %i[FPDF_TEXTPAGE int pointer], :FPDF_BOOL
+    # NOTA: FPDFText_GetMatrix è già attaccata sopra (sezione text page).
+    # In combinazione con FPDFFont_GetGlyphWidth, permette di calcolare
+    # l'advance del glifo in coordinate pagina come
+    # `glyph_width × |FPDFText_GetMatrix.a|`.
 
     # =========================================================================
     # Annotations
@@ -642,6 +642,229 @@ module Rpdfium
                     %i[FPDF_STRUCTELEMENT pointer ulong], :ulong
     attach_function :FPDF_StructElement_GetTitle,
                     %i[FPDF_STRUCTELEMENT pointer ulong], :ulong
+
+    # =========================================================================
+    # Page box geometry — media/crop/bleed/trim/art box
+    # =========================================================================
+    # Ogni pagina PDF ha fino a 5 box rettangolari, in coordinate bottom-up:
+    #   - media: l'area fisica completa della pagina (sempre presente)
+    #   - crop: la sotto-area visibile (default = media se non specificata)
+    #   - bleed: area utile per stampa con marginatura (rare)
+    #   - trim: area finale di taglio (rare, per pre-stampa)
+    #   - art: area di contenuto significativo (rare)
+    #
+    # In pdfplumber sono esposte come `page.mediabox`, `page.cropbox`, ecc.
+    # Senza accesso a cropbox, una libreria di estrazione PDF non può sapere
+    # qual è l'area "visibile" della pagina vs quella "fisica".
+    # Tutte ritornano FPDF_BOOL: 0 se il box non è definito.
+    attach_function :FPDFPage_GetMediaBox,
+                    %i[FPDF_PAGE pointer pointer pointer pointer], :FPDF_BOOL
+    attach_function :FPDFPage_GetCropBox,
+                    %i[FPDF_PAGE pointer pointer pointer pointer], :FPDF_BOOL
+    attach_function :FPDFPage_GetBleedBox,
+                    %i[FPDF_PAGE pointer pointer pointer pointer], :FPDF_BOOL
+    attach_function :FPDFPage_GetTrimBox,
+                    %i[FPDF_PAGE pointer pointer pointer pointer], :FPDF_BOOL
+    attach_function :FPDFPage_GetArtBox,
+                    %i[FPDF_PAGE pointer pointer pointer pointer], :FPDF_BOOL
+
+    # =========================================================================
+    # Page object: stato, bounds rotati, dash pattern, marked content
+    # =========================================================================
+    # `FPDFPageObj_GetIsActive`: alcuni page object possono essere "inattivi"
+    # (es. nascosti da Optional Content / livelli disabilitati). Senza
+    # questo check, l'estrazione includerebbe contenuto non visibile.
+    # Restituisce 0/1 in *out_active.
+    attach_function :FPDFPageObj_GetIsActive,
+                    %i[FPDF_PAGEOBJECT pointer], :FPDF_BOOL
+
+    # `FPDFPageObj_GetRotatedBounds`: bbox in 4 punti (FS_QUADPOINTSF) per
+    # oggetti ruotati. La GetBounds standard ritorna l'AABB (Axis-Aligned
+    # Bounding Box), inutile per oggetti a 45°/90°. Per testo verticale o
+    # ruotato, questo è il bbox "vero".
+    attach_function :FPDFPageObj_GetRotatedBounds,
+                    %i[FPDF_PAGEOBJECT pointer], :FPDF_BOOL
+
+    # Dash pattern: utile in `line_segments` per filtrare linee guida
+    # tratteggiate (spesso usate come "non-printing" hints nei template).
+    # Le linee dashed possono confondere la detection cellule tabelle.
+    attach_function :FPDFPageObj_GetDashCount,
+                    %i[FPDF_PAGEOBJECT], :int
+    attach_function :FPDFPageObj_GetDashArray,
+                    %i[FPDF_PAGEOBJECT pointer size_t], :FPDF_BOOL
+    attach_function :FPDFPageObj_GetDashPhase,
+                    %i[FPDF_PAGEOBJECT pointer], :FPDF_BOOL
+
+    # Marked content (Tagged PDF) — operatori BMC/BDC del content stream.
+    # In PDF strutturati (PDF/UA, Word→PDF, InDesign export), gli operatori
+    # `/Span BMC ... EMC` o `/Span <</MCID 12>> BDC ... EMC` raggruppano
+    # semanticamente i char. Per PDF generati da gestionali italiani questi
+    # tag NON sono presenti; per PDF "tagged" sono il modo più affidabile
+    # di raggruppare token.
+    attach_function :FPDFPageObj_CountMarks,
+                    %i[FPDF_PAGEOBJECT], :int
+    attach_function :FPDFPageObj_GetMark,
+                    %i[FPDF_PAGEOBJECT ulong], :FPDF_PAGEOBJECTMARK
+    attach_function :FPDFPageObj_GetMarkedContentID,
+                    %i[FPDF_PAGEOBJECT], :int
+    attach_function :FPDFPageObjMark_GetName,
+                    %i[FPDF_PAGEOBJECTMARK pointer ulong pointer], :FPDF_BOOL
+    attach_function :FPDFPageObjMark_CountParams,
+                    %i[FPDF_PAGEOBJECTMARK], :int
+    attach_function :FPDFPageObjMark_GetParamKey,
+                    %i[FPDF_PAGEOBJECTMARK ulong pointer ulong pointer],
+                    :FPDF_BOOL
+    attach_function :FPDFPageObjMark_GetParamValueType,
+                    %i[FPDF_PAGEOBJECTMARK string], :int
+    attach_function :FPDFPageObjMark_GetParamIntValue,
+                    %i[FPDF_PAGEOBJECTMARK string pointer], :FPDF_BOOL
+    attach_function :FPDFPageObjMark_GetParamStringValue,
+                    %i[FPDF_PAGEOBJECTMARK string pointer ulong pointer],
+                    :FPDF_BOOL
+
+    # =========================================================================
+    # Catalog / Document metadata
+    # =========================================================================
+    # FPDFCatalog_GetLanguage: lingua dichiarata dal documento (es. "it-IT").
+    # Utile per pipeline di estrazione che vogliono switchare regole
+    # language-specific (es. tokenizer di parole, lookup hyphen).
+    attach_function :FPDFCatalog_GetLanguage,
+                    %i[FPDF_DOCUMENT pointer ulong], :ulong
+
+    # FPDFDoc_GetPageMode: stato di apertura PDF (es. PageMode.UseOutlines,
+    # PageMode.FullScreen). Numeric. Utile per editor PDF/viewer building.
+    attach_function :FPDFDoc_GetPageMode, %i[FPDF_DOCUMENT], :int
+
+    # =========================================================================
+    # Links (annotation Link e LinkAtPoint per ricerca per coordinata)
+    # =========================================================================
+    # `FPDFLink_GetLinkAtPoint`: dato (x, y) in coordinate pagina, ritorna
+    # il link annotation che lo contiene. Cuore della funzione "click handling"
+    # in viewer / OCR-style "extract links". Pdfplumber espone simile via
+    # `page.hyperlinks`.
+    attach_function :FPDFLink_GetLinkAtPoint,
+                    %i[FPDF_PAGE double double], :FPDF_LINK
+    attach_function :FPDFLink_GetLinkZOrderAtPoint,
+                    %i[FPDF_PAGE double double], :int
+    attach_function :FPDFLink_GetAnnot,
+                    %i[FPDF_PAGE FPDF_LINK], :FPDF_ANNOTATION
+    attach_function :FPDFLink_GetAnnotRect,
+                    %i[FPDF_LINK pointer], :FPDF_BOOL
+    # FPDFLink_GetTextRange: range di char_index nella text page corrispondenti
+    # al link. Permette di mappare hyperlink → testo della pagina.
+    attach_function :FPDFLink_GetTextRange,
+                    %i[FPDF_LINK pointer pointer], :FPDF_BOOL
+    # Rect e QuadPoints: geometria del link (rectangle o quadrilatero per
+    # link che attraversano più righe).
+    attach_function :FPDFLink_GetRect,
+                    %i[FPDF_LINK int pointer], :FPDF_BOOL
+    attach_function :FPDFLink_GetQuadPoints,
+                    %i[FPDF_LINK int pointer], :FPDF_BOOL
+
+    # =========================================================================
+    # Action / Destination (estensioni outline + link)
+    # =========================================================================
+    # FPDFAction_GetDest: per action di tipo "GoTo", ritorna il FPDF_DEST.
+    # FPDFAction_GetFilePath: per action "Launch" o "RemoteGoTo", path del file
+    # esterno target.
+    attach_function :FPDFAction_GetDest,
+                    %i[FPDF_DOCUMENT FPDF_ACTION], :FPDF_DEST
+    attach_function :FPDFAction_GetFilePath,
+                    %i[FPDF_ACTION pointer ulong], :ulong
+    # FPDFBookmark_GetAction: action associata a un bookmark (alternativa a
+    # GetDest se il bookmark è un'action invece di una destinazione).
+    attach_function :FPDFBookmark_GetAction,
+                    %i[FPDF_BOOKMARK], :FPDF_ACTION
+    # FPDFBookmark_GetCount: numero di sub-bookmark (positivo = espansi,
+    # negativo = collassati, 0 = leaf).
+    attach_function :FPDFBookmark_GetCount,
+                    %i[FPDF_BOOKMARK], :int
+    # FPDFDest_GetView: tipo di view (Fit, FitH, XYZ ecc.) + parametri.
+    # FPDFDest_GetLocationInPage: x/y/zoom estratti dal dest.
+    attach_function :FPDFDest_GetView,
+                    %i[FPDF_DEST pointer pointer], :ulong
+    attach_function :FPDFDest_GetLocationInPage,
+                    %i[FPDF_DEST pointer pointer pointer pointer pointer pointer],
+                    :FPDF_BOOL
+
+    # =========================================================================
+    # Font extras: GetFontData, GetAscent, GetDescent
+    # =========================================================================
+    # Già attaccate sopra: FPDFFont_GetGlyphWidth.
+    # Aggiungiamo: FontData (raw font program bytes — utile per inspection,
+    # debug embedding, font substitution) e GetGlyphPath (path vettoriale di
+    # un glifo, alternativa a GlyphWidth per font esotici).
+    # GetFontData ha la convention bool: ritorna `out_buflen` se buf è NULL.
+    attach_function :FPDFFont_GetFontData,
+                    %i[FPDF_FONT pointer size_t pointer], :FPDF_BOOL
+    attach_function :FPDFFont_GetGlyphPath,
+                    %i[FPDF_FONT uint float], :FPDF_GLYPHPATH
+    # FPDF_GLYPHPATH: handle a un path. Lo aggiungo come typedef.
+    # Le sue API GlyphPath_* sono niche, ma le esponiamo per simmetria.
+    attach_function :FPDFGlyphPath_CountGlyphSegments,
+                    %i[FPDF_GLYPHPATH], :int
+    attach_function :FPDFGlyphPath_GetGlyphPathSegment,
+                    %i[FPDF_GLYPHPATH int], :FPDF_PATHSEGMENT
+
+    # =========================================================================
+    # Text page: char index at position
+    # =========================================================================
+    # FPDFText_GetCharIndexAtPos: dato un punto (x, y) in coord pagina,
+    # ritorna l'indice del char più vicino (entro tolerance). Utile per
+    # "hit test" in viewer e per mapping coord → text index nella ricerca.
+    attach_function :FPDFText_GetCharIndexAtPos,
+                    %i[FPDF_TEXTPAGE double double double double], :int
+    # FPDFText_GetTextIndexFromCharIndex / GetCharIndexFromTextIndex:
+    # mappano l'indice "char" (per glifo) all'indice "text" (per codepoint
+    # logico). I due indici differiscono per ligature/sostituzioni.
+    attach_function :FPDFText_GetTextIndexFromCharIndex,
+                    %i[FPDF_TEXTPAGE int], :int
+    attach_function :FPDFText_GetCharIndexFromTextIndex,
+                    %i[FPDF_TEXTPAGE int], :int
+
+    # =========================================================================
+    # Annotation extras: GetFlags, GetColor, GetBorder, AP, attachment points
+    # =========================================================================
+    # FPDFAnnot_GetFlags: bitmask di Flags (Hidden, Print, NoZoom ecc.).
+    # Senza questo, non possiamo distinguere un annotation visibile da uno
+    # con flag Hidden.
+    attach_function :FPDFAnnot_GetFlags, %i[FPDF_ANNOTATION], :int
+    # Colore: stroke (BORDER_COLOR) e fill (INTERIOR_COLOR).
+    attach_function :FPDFAnnot_GetColor,
+                    %i[FPDF_ANNOTATION int pointer pointer pointer pointer],
+                    :FPDF_BOOL
+    # Border: spessore, raggio orizzontale/verticale, dash array count.
+    attach_function :FPDFAnnot_GetBorder,
+                    %i[FPDF_ANNOTATION pointer pointer pointer], :FPDF_BOOL
+    # AP (Appearance Stream): forma renderizzata dell'annotation in vari
+    # modi (Normal/Rollover/Down).
+    attach_function :FPDFAnnot_GetAP,
+                    %i[FPDF_ANNOTATION int pointer ulong], :ulong
+    # FileAttachment: per Annotation di sottotipo FileAttachment, ottiene
+    # l'FPDF_ATTACHMENT.
+    attach_function :FPDFAnnot_GetFileAttachment,
+                    %i[FPDF_ANNOTATION], :FPDF_ATTACHMENT
+    # AttachmentPoints: per highlight/markup che attraversano più righe,
+    # i 4 punti di ogni quadrilatero.
+    attach_function :FPDFAnnot_CountAttachmentPoints,
+                    %i[FPDF_ANNOTATION], :size_t
+    attach_function :FPDFAnnot_GetAttachmentPoints,
+                    %i[FPDF_ANNOTATION size_t pointer], :FPDF_BOOL
+
+    # =========================================================================
+    # Attachment extras
+    # =========================================================================
+    # FPDFAttachment_GetSubtype: MIME-like subtype del file allegato.
+    attach_function :FPDFAttachment_GetSubtype,
+                    %i[FPDF_ATTACHMENT pointer ulong], :ulong
+    # FPDFAttachment_GetStringValue/HasKey: per leggere i metadati custom
+    # del file attachment (Description, CreationDate, ecc.).
+    attach_function :FPDFAttachment_HasKey,
+                    %i[FPDF_ATTACHMENT string], :FPDF_BOOL
+    attach_function :FPDFAttachment_GetValueType,
+                    %i[FPDF_ATTACHMENT string], :int
+    attach_function :FPDFAttachment_GetStringValue,
+                    %i[FPDF_ATTACHMENT string pointer ulong], :ulong
 
     # =========================================================================
     # Helper: leggere stringhe UTF-16LE che PDFium ritorna in bytes
