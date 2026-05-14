@@ -159,16 +159,16 @@ module Rpdfium
     # baseline. Con `loose: false` si ottengono le bbox "tight" del singolo
     # glifo, utili per misure di layout fine ma sbagliate per il filtro
     # cella tabellare.
-    def chars(loose: true, inject_spaces: true)
+    def chars(loose: true, inject_spaces: true, lean: false)
       # Cache: chars() viene chiamato una volta da Table#extract e poi
       # nuovamente da WordExtractor (passando per Extractor#page_words se
       # vertical/horizontal_strategy è :text). Ogni chiamata costa O(n) FFI
       # roundtrip per char — costoso su pagine con migliaia di char.
-      cache_key = [loose, inject_spaces]
+      cache_key = [loose, inject_spaces, lean]
       @chars_cache ||= {}
       return @chars_cache[cache_key] if @chars_cache.key?(cache_key)
 
-      raw = compute_chars(loose: loose)
+      raw = compute_chars(loose: loose, lean: lean)
       result = inject_spaces ? rebuild_word_separators(raw) : raw
       @chars_cache[cache_key] = result
     end
@@ -289,30 +289,26 @@ module Rpdfium
     end
 
 
-    def compute_chars(loose:)
+    def compute_chars(loose:, lean: false)
       tp = text_page
       n = tp.char_count
       return [] if n.zero?
 
       # Geometria della pagina dopo l'applicazione della rotazione PDF.
-      # PDFium GetPageWidth/Height ritorna già i valori post-rotazione, ma
-      # le bbox dei char in FPDFText_GetCharBox sono espresse nelle coord
-      # raw (pre-rotazione). Per render-compatible output applichiamo
-      # manualmente la trasformazione di rotazione.
       h = height
       w = width
-      page_rotation = rotation  # 0, 90, 180, 270 — già normalizzata
+      page_rotation = rotation
 
-      # Dimensioni della pagina RAW (pre-rotazione), che sono il sistema
-      # di coordinate in cui FPDFText_GetCharBox restituisce i punti.
-      # Per rotation 0/180 le dimensioni raw coincidono con quelle post-
-      # rotation; per 90/270 sono invertite.
       raw_w, raw_h = case page_rotation
                      when 90, 270 then [h, w]
                      else [w, h]
                      end
 
       result = Array.new(n)
+
+      # Buffer FFI riusati tra tutte le iterazioni del loop.
+      # MemoryPointer.new è non-banale (~µs ciascuna), allocarne O(n) per
+      # char è il principale costo di compute_chars dopo le chiamate FFI.
       l = FFI::MemoryPointer.new(:double)
       r = FFI::MemoryPointer.new(:double)
       b = FFI::MemoryPointer.new(:double)
@@ -320,80 +316,108 @@ module Rpdfium
       ox = FFI::MemoryPointer.new(:double)
       oy = FFI::MemoryPointer.new(:double)
       rect = Raw::FS_RECTF.new
-      font_buf = FFI::MemoryPointer.new(:uchar, 256)
-      flags_buf = FFI::MemoryPointer.new(:int)
+      font_buf = FFI::MemoryPointer.new(:uchar, 256) unless lean
+      flags_buf = FFI::MemoryPointer.new(:int) unless lean
+      fs_buf = FFI::MemoryPointer.new(:float)
+      gw_buf = FFI::MemoryPointer.new(:float)
+      matrix = Raw::FS_MATRIX.new
+      text_obj_text_buf = FFI::MemoryPointer.new(:uint8, TEXT_OBJ_INITIAL_BUF_BYTES)
 
-      # Cache per text object: tutti i char dello stesso text object
-      # condividono render_mode, font handle, font_size, e la stessa
-      # CTM-scale per il calcolo advance. Chiave: pointer.address (Integer)
-      # perché FFI::Pointer non è un Hash key stabile tra istanze.
       text_obj_cache = {}
+      tp_handle = tp.handle
 
       n.times do |i|
         x0, x1, y_top, y_bot = read_char_bbox(tp, i, loose, l, r, b, t, rect)
-        Raw.FPDFText_GetCharOrigin(tp.handle, i, ox, oy)
+        Raw.FPDFText_GetCharOrigin(tp_handle, i, ox, oy)
         origin_x_raw = ox.read_double
         origin_y_raw = oy.read_double
-        # Font name (best-effort): GetFontInfo è disponibile su tutte le
-        # versioni di PDFium ed è il path più portabile a char-level.
-        n_bytes = Raw.FPDFText_GetFontInfo(tp.handle, i, font_buf, 256, flags_buf)
-        font_name = if n_bytes > 1
-                      font_buf.read_bytes(n_bytes - 1).force_encoding("UTF-8")
-                    end
-        cp = Raw.FPDFText_GetUnicode(tp.handle, i)
 
-        # Risolvi il text object una volta sola e cache tutto ciò che
-        # dipende solo da esso. Su PDFium < chromium/6611 questa lookup
-        # non esiste — in quel caso text_obj sarà null e tutti i campi
-        # derivati saranno nil.
+        # Font name: skippato in lean (1 FFI risparmiata per char).
+        font_name = nil
+        unless lean
+          n_bytes = Raw.FPDFText_GetFontInfo(tp_handle, i, font_buf, 256, flags_buf)
+          font_name = font_buf.read_bytes(n_bytes - 1).force_encoding("UTF-8") if n_bytes > 1
+        end
+
+        cp = Raw.FPDFText_GetUnicode(tp_handle, i)
+
         text_obj = begin
-          Raw.FPDFText_GetTextObject(tp.handle, i)
+          Raw.FPDFText_GetTextObject(tp_handle, i)
         rescue Rpdfium::LoadError
           nil
         end
 
         rm, font_handle, font_size_for_obj, ends_with_space =
-          fetch_text_obj_info(text_obj, tp, text_obj_cache)
+          fetch_text_obj_info(text_obj, tp, text_obj_cache,
+                              fs_buf: fs_buf, text_buf: text_obj_text_buf)
 
-        # Advance in coordinate pagina: glyph_width nel font program ×
-        # scala orizzontale del CTM per QUESTO char (la matrix è per-char
-        # in PDFium). Più affidabile della bbox width per char con kerning
-        # applicato dopo il rendering.
-        advance = compute_glyph_advance(font_handle, cp, font_size_for_obj,
-                                         tp, i)
+        # Advance: 2 FFI per char (GetGlyphWidth + GetMatrix). In lean
+        # mode skippiamo — best_reference_width fa fallback su bbox-width
+        # che funziona altrettanto bene per il discriminante word-boundary.
+        advance = if lean
+                    nil
+                  else
+                    compute_glyph_advance_fast(font_handle, cp, font_size_for_obj,
+                                                tp_handle, i, gw_buf, matrix)
+                  end
 
-        # Trasforma le coord raw PDFium (bottom-up, pre-rotazione) nel
-        # sistema "logico" della pagina post-rotazione (top-down).
-        # Per rotation=0 la formula coincide con la conversione semplice
-        # bottom-up → top-down. Per 90/180/270 applica anche la rotazione.
         td_x0, td_x1, td_top, td_bottom, td_ox, td_oy =
           apply_page_rotation_to_char(page_rotation, raw_w, raw_h,
                                        x0, x1, y_top, y_bot,
                                        origin_x_raw, origin_y_raw)
 
-        result[i] = {
-          char:     safe_codepoint(cp),
-          codepoint: cp,
-          x0:       td_x0,
-          x1:       td_x1,
-          top:      td_top,
-          bottom:   td_bottom,
-          origin_x: td_ox,
-          origin_y: td_oy,
-          angle:    Raw.FPDFText_GetCharAngle(tp.handle, i),
-          fontsize: font_size_for_obj || Raw.FPDFText_GetFontSize(tp.handle, i),
-          font:     font_name,
-          weight:   Raw.FPDFText_GetFontWeight(tp.handle, i),
-          render_mode:   rm,
-          generated:     Raw.FPDFText_IsGenerated(tp.handle, i) == 1,
-          hyphen:        Raw.FPDFText_IsHyphen(tp.handle, i) == 1,
-          unicode_error: Raw.FPDFText_HasUnicodeMapError(tp.handle, i) == 1,
-
-          # Nuove proprietà 0.3.4 derivate dal text object.
-          advance: advance,
-          text_obj_id: text_obj && !text_obj.null? ? text_obj.address : nil,
-          text_obj_ends_with_space: ends_with_space
-        }
+        # In lean mode skippiamo 5 chiamate FFI per char:
+        # GetCharAngle, GetFontWeight, IsHyphen, HasUnicodeMapError,
+        # (e GetFontSize fallback se font_size_for_obj è nil).
+        # Su pagine con migliaia di char il risparmio è significativo
+        # (decine di ms). I metadata risultano nil/false, che è il valore
+        # neutro per il pipeline text/tables/words interno.
+        result[i] =
+          if lean
+            {
+              char:     safe_codepoint(cp),
+              codepoint: cp,
+              x0:       td_x0,
+              x1:       td_x1,
+              top:      td_top,
+              bottom:   td_bottom,
+              origin_x: td_ox,
+              origin_y: td_oy,
+              angle:    nil,
+              fontsize: font_size_for_obj,
+              font:     nil,
+              weight:   nil,
+              render_mode:   rm,
+              generated:     Raw.FPDFText_IsGenerated(tp_handle, i) == 1,
+              hyphen:        false,
+              unicode_error: false,
+              advance: advance,
+              text_obj_id: text_obj && !text_obj.null? ? text_obj.address : nil,
+              text_obj_ends_with_space: ends_with_space
+            }
+          else
+            {
+              char:     safe_codepoint(cp),
+              codepoint: cp,
+              x0:       td_x0,
+              x1:       td_x1,
+              top:      td_top,
+              bottom:   td_bottom,
+              origin_x: td_ox,
+              origin_y: td_oy,
+              angle:    Raw.FPDFText_GetCharAngle(tp_handle, i),
+              fontsize: font_size_for_obj || Raw.FPDFText_GetFontSize(tp_handle, i),
+              font:     font_name,
+              weight:   Raw.FPDFText_GetFontWeight(tp_handle, i),
+              render_mode:   rm,
+              generated:     Raw.FPDFText_IsGenerated(tp_handle, i) == 1,
+              hyphen:        Raw.FPDFText_IsHyphen(tp_handle, i) == 1,
+              unicode_error: Raw.FPDFText_HasUnicodeMapError(tp_handle, i) == 1,
+              advance: advance,
+              text_obj_id: text_obj && !text_obj.null? ? text_obj.address : nil,
+              text_obj_ends_with_space: ends_with_space
+            }
+          end
       end
       result
     end
@@ -483,7 +507,7 @@ module Rpdfium
     # proprietà dell'oggetto, non del singolo char, quindi può essere
     # calcolata una volta sola e cachata insieme agli altri campi — evita
     # una chiamata FPDFTextObj_GetText per ogni char che condivide l'obj.
-    def fetch_text_obj_info(text_obj, tp, cache)
+    def fetch_text_obj_info(text_obj, tp, cache, fs_buf:, text_buf:)
       return [nil, nil, nil, nil] if text_obj.nil? || text_obj.null?
 
       addr = text_obj.address
@@ -493,17 +517,76 @@ module Rpdfium
       font = Raw.FPDFTextObj_GetFont(text_obj)
       font_handle = font.null? ? nil : font
 
-      fs_buf = FFI::MemoryPointer.new(:float)
       font_size = if Raw.FPDFTextObj_GetFontSize(text_obj, fs_buf) == 1
                     fs_buf.read_float
                   end
 
-      obj_text = read_text_obj_text_from(text_obj, tp)
+      obj_text = read_text_obj_text_fast(text_obj, tp, text_buf)
       ends_with_space = obj_text&.end_with?(" ")
 
       tuple = [rm, font_handle, font_size, ends_with_space]
       cache[addr] = tuple
       tuple
+    end
+
+    # Versione "fast" di read_text_obj_text_from: riusa il buffer passato
+    # invece di allocarlo. Per il 99% dei text obj il buffer iniziale da
+    # 256 byte basta; nel caso raro che PDFium richieda più spazio, alloca
+    # un buffer più grande on-demand (questa è una path rara, OK
+    # allocare).
+    def read_text_obj_text_fast(text_obj, tp, buf)
+      return nil if text_obj.nil? || text_obj.null?
+
+      needed = Raw.FPDFTextObj_GetText(text_obj, tp.handle, buf,
+                                        TEXT_OBJ_INITIAL_BUF_BYTES)
+      return nil if needed < 2
+
+      if needed > TEXT_OBJ_INITIAL_BUF_BYTES
+        # Path raro: text obj con > 128 char. Alloco buffer dedicato.
+        big_buf = FFI::MemoryPointer.new(:uint8, needed)
+        needed = Raw.FPDFTextObj_GetText(text_obj, tp.handle, big_buf, needed)
+        return nil if needed < 2
+
+        payload_bytes = needed - 2
+        return nil if payload_bytes <= 0
+
+        return big_buf.read_bytes(payload_bytes)
+                      .force_encoding("UTF-16LE")
+                      .encode("UTF-8")
+                      .delete("\u0000")
+      end
+
+      payload_bytes = needed - 2
+      return nil if payload_bytes <= 0
+
+      buf.read_bytes(payload_bytes)
+         .force_encoding("UTF-16LE")
+         .encode("UTF-8")
+         .delete("\u0000")
+    end
+
+    # Versione "fast" di compute_glyph_advance: riusa gw_buf e matrix
+    # invece di allocarli per char. Stesso comportamento funzionale.
+    def compute_glyph_advance_fast(font, codepoint, font_size, tp_handle,
+                                    char_index, gw_buf, matrix)
+      return nil if font.nil? || font_size.nil?
+
+      ok = begin
+        Raw.FPDFFont_GetGlyphWidth(font, codepoint, font_size, gw_buf)
+      rescue Rpdfium::LoadError
+        return nil
+      end
+      return nil if ok == 0
+
+      glyph_w_font_units = gw_buf.read_float
+
+      # CTM scale: riuso la matrix in-place.
+      scale = if Raw.FPDFText_GetMatrix(tp_handle, char_index, matrix) == 1
+                matrix[:a].abs
+              else
+                1.0
+              end
+      glyph_w_font_units * scale
     end
 
     # Buffer size iniziale per FPDFTextObj_GetText: 256 byte = 128 char UTF-16.
@@ -632,10 +715,15 @@ module Rpdfium
     #   template di stampa e confondono la detection cellule tabella. Chi
     #   le vuole esplicitamente (es. drawing extraction completo) passa true.
     def line_segments(include_curves: false, include_dashed: false)
+      # Cache per parametri: line_segments viene tipicamente chiamato 2 volte
+      # per pagina (da horizontal_lines E da vertical_lines), e itera tutti
+      # i path objects della pagina via FFI — costoso su PDF con grafica
+      # ricca (es. CR Banca d'Italia: ~500-1000 path obj per pagina).
+      cache_key = [include_curves, include_dashed]
+      @line_segments_cache ||= {}
+      return @line_segments_cache[cache_key] if @line_segments_cache.key?(cache_key)
+
       out = []
-      # Per la trasformazione delle line endpoints applichiamo la stessa
-      # rotazione che applichiamo ai char. Sono nello stesso sistema raw
-      # PDFium (bottom-up, pre-rotazione).
       page_rotation = rotation
       raw_w, raw_h = case page_rotation
                      when 90, 270 then [height, width]
@@ -644,7 +732,8 @@ module Rpdfium
       ctx = { rotation: page_rotation, raw_w: raw_w, raw_h: raw_h }
       collect_line_segments(@state[:handle], identity_matrix, ctx,
                              include_curves, out, page_object: false)
-      include_dashed ? out : out.reject { |s| s[:dashed] }
+      result = include_dashed ? out : out.reject { |s| s[:dashed] }
+      @line_segments_cache[cache_key] = result
     end
 
     private

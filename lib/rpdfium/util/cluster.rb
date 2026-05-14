@@ -47,12 +47,40 @@ module Rpdfium
       # Esempio:
       #   cluster_objects(words, ->(w) { w[:top] }, tolerance: 1)
       #   cluster_objects(words, :top, tolerance: 1)   # syntactic sugar
-      def cluster_objects(objects, key_fn, tolerance: 0)
+      def cluster_objects(objects, key_fn, tolerance: 0, presorted: false)
         return [] if objects.empty?
 
-        accessor = key_fn.is_a?(Symbol) ? ->(o) { o[key_fn] } : key_fn
+        # Fast path per il caso Symbol più comune (:top, :x0, :bottom):
+        # accesso diretto Hash[symbol] è ~2× più veloce della lambda call.
+        if key_fn.is_a?(Symbol)
+          # Se il chiamante garantisce che l'input è già sortato per key_fn
+          # (es. perché viene da un sort lessicografico [key_fn, ...]) si
+          # può saltare il sort interno. Risparmio significativo quando
+          # cluster_objects è chiamato in loop su molte righe piccole.
+          sorted = presorted ? objects : objects.sort_by { |o| o[key_fn] }
+          first = sorted.first
+          last_key = first[key_fn]
+          clusters = [[first]]
+          tol = tolerance.to_f
+          i = 1
+          n = sorted.size
+          while i < n
+            obj = sorted[i]
+            curr_key = obj[key_fn]
+            if (curr_key - last_key).abs <= tol
+              clusters.last << obj
+            else
+              clusters << [obj]
+            end
+            last_key = curr_key
+            i += 1
+          end
+          return clusters
+        end
 
-        sorted = objects.sort_by { |o| accessor.call(o) }
+        # Path generico con accessor callable
+        accessor = key_fn
+        sorted = presorted ? objects : objects.sort_by { |o| accessor.call(o) }
         last_key = accessor.call(sorted.first)
         clusters = [[sorted.first]]
 

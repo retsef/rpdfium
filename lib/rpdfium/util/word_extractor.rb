@@ -46,14 +46,24 @@ module Rpdfium
       def extract_words(chars)
         return [] if chars.empty?
 
+        # Fast path: 1 solo char → 1 word triviale (se non whitespace).
+        if chars.size == 1
+          c = chars.first
+          return [] if blank?(c) && !@keep_blank_chars
+
+          return [build_word([c])]
+        end
+
         # 1. Ordina per (top, x0). Top-down, left-to-right.
         sorted = chars.sort_by { |c| [c[:top], c[:x0]] }
 
         # 2. Cluster in righe per `top`.
-        # cluster_objects è stable-sort su un input già ordinato per [top, x0]:
-        # ogni cluster risulta già ordinato per x0 al suo interno, quindi il
-        # sort successivo dentro la riga è ridondante.
-        rows = Cluster.cluster_objects(sorted, :top, tolerance: @y_tolerance)
+        # `presorted: true`: sorted è già ordinato per [top, x0], quindi
+        # implicitamente anche per top — cluster_objects salta il proprio
+        # sort interno.
+        rows = Cluster.cluster_objects(sorted, :top,
+                                        tolerance: @y_tolerance,
+                                        presorted: true)
 
         words = []
         rows.each do |row|

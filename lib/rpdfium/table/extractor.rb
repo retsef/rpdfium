@@ -166,7 +166,8 @@ module Rpdfium
       def page_words
         # Genera words usando il nostro WordExtractor (consistente con
         # quello usato in Table#extract, così i thresholds combaciano).
-        chars = @page.chars
+        # `lean: true`: vedi commento in Table#extract.
+        chars = @page.chars(lean: true)
         Util::WordExtractor.new(
           x_tolerance: @settings[:text_x_tolerance],
           y_tolerance: @settings[:text_y_tolerance],
