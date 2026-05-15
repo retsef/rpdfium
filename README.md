@@ -38,15 +38,36 @@ C++ engine that powers Chrome's PDF viewer.
 `rpdfium` itself ships only Ruby code. The native library is loaded
 from one of, in order:
 
-- `ENV["PDFIUM_LIBRARY_PATH"]` (highest priority)
-- a future `rpdfium-binary` companion gem (planned, will mirror
-  `pypdfium2`'s wheel approach using prebuilt binaries from
-  [bblanchon/pdfium-binaries](https://github.com/bblanchon/pdfium-binaries))
-- the system `libpdfium`
+- `ENV["PDFIUM_LIBRARY_PATH"]` (highest priority — point to a
+  `libpdfium.{so,dylib,dll}` of your choice)
+- the [`rpdfium-binary`](https://github.com/retsef/rpdfium-binary)
+  companion gem (recommended), which ships precompiled PDFium binaries
+  for major platforms via [bblanchon/pdfium-binaries](https://github.com/bblanchon/pdfium-binaries)
+- the system `libpdfium` (if installed via your package manager)
 
-Until the binary gem ships, grab a release from
-<https://github.com/bblanchon/pdfium-binaries/releases> and point the
-env var at the `.so` / `.dylib` / `.dll`.
+### Recommended: use `rpdfium-binary`
+
+```bash
+gem install rpdfium-binary
+```
+
+RubyGems picks the right platform-specific gem automatically. Supported
+platforms include `x86_64-linux`, `aarch64-linux`, `x86_64-linux-musl`,
+`aarch64-linux-musl`, `arm64-darwin`, `x86_64-darwin`, `x64-mingw-ucrt`,
+`x86-mingw32`, `aarch64-mingw-ucrt`. For unsupported platforms the
+generic Ruby-platform gem is installed and the binary is downloaded on
+first use into the user data directory.
+
+Add to your `Gemfile`:
+
+```ruby
+gem "rpdfium"
+gem "rpdfium-binary"
+```
+
+### Alternative: manual `PDFIUM_LIBRARY_PATH`
+
+Useful in containers, CI, or when you need a specific PDFium build:
 
 ```bash
 # macOS arm64
@@ -292,7 +313,7 @@ Rpdfium::Table::Debugger.visualize(page, "debug.png",
 | ✅ | Table extraction — `:text` strategy |
 | ✅ | Table extraction — `:explicit` strategy |
 | ✅ | Visual table debugger |
-| 🚧 | `rpdfium-binary` companion gem with prebuilt PDFium |
+| ✅ | [`rpdfium-binary`](https://github.com/retsef/rpdfium-binary) companion gem with prebuilt PDFium |
 | 🚧 | XFA form support |
 | 🚧 | Structure tree traversal (PDF tagged → semantic tables) |
 | 🔮 | OCR fallback for scanned PDFs (via tesseract bindings) |
