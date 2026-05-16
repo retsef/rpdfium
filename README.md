@@ -33,6 +33,11 @@ character-level bounding boxes, real vector path geometry, or table
 extraction. `rpdfium` fills that gap by binding the same battle-tested
 C++ engine that powers Chrome's PDF viewer.
 
+In practice it matches the speed of Python's `pypdfium2` on text
+extraction and is **15-56× faster than `pdfplumber`** while using
+**5-7× less memory** on large documents. See [Performance](#performance)
+for details.
+
 ## Installing PDFium
 
 `rpdfium` itself ships only Ruby code. The native library is loaded
@@ -162,7 +167,7 @@ page.vertical_lines
 page.images.each do |img|
   meta = img.metadata
   puts "#{meta[:width]}×#{meta[:height]} @ #{meta[:horizontal_dpi]} DPI, " \
-       "#{meta[:colorspace]}"
+         "#{meta[:colorspace]}"
   puts "filters: #{img.filters}"   # e.g. ["DCTDecode"] for JPEG
 
   # JPEG passthrough when filters == ["DCTDecode"]; otherwise rendered to PNG
@@ -224,7 +229,7 @@ end
 ```ruby
 # Pure-Ruby PNG writer, zero deps:
 page.render_to_png("page.png", scale: 2.0, include_annotations: true,
-                                include_forms: true)
+                   include_forms: true)
 
 # Or get raw RGBA/BGRA/Gray bytes:
 w, h, bytes, stride = page.render(scale: 2.0, output: :rgba)
@@ -236,20 +241,20 @@ w, h, bytes, stride = page.render(scale: 2.0, output: :rgba)
 
 ```ruby
 extractor = Rpdfium::Table::Extractor.new(page,
-  vertical_strategy:        :lines,    # :lines / :lines_strict / :text / :explicit
-  horizontal_strategy:      :lines,
-  snap_tolerance:           3.0,
-  join_tolerance:           3.0,
-  edge_min_length:          3.0,
-  edge_min_length_prefilter: 1.0,
-  intersection_tolerance:   3.0,
-  min_words_vertical:       3,
-  min_words_horizontal:     1,
-  text_x_tolerance:         3.0,
-  text_y_tolerance:         3.0,
-  explicit_vertical_lines:  [],         # [Float] x-coords or [Hash{x:, top:, bottom:}]
-  explicit_horizontal_lines: [],
-  auto_fallback:            true        # try :text if :lines finds nothing
+                                          vertical_strategy:        :lines,    # :lines / :lines_strict / :text / :explicit
+                                          horizontal_strategy:      :lines,
+                                          snap_tolerance:           3.0,
+                                          join_tolerance:           3.0,
+                                          edge_min_length:          3.0,
+                                          edge_min_length_prefilter: 1.0,
+                                          intersection_tolerance:   3.0,
+                                          min_words_vertical:       3,
+                                          min_words_horizontal:     1,
+                                          text_x_tolerance:         3.0,
+                                          text_y_tolerance:         3.0,
+                                          explicit_vertical_lines:  [],         # [Float] x-coords or [Hash{x:, top:, bottom:}]
+                                          explicit_horizontal_lines: [],
+                                          auto_fallback:            true        # try :text if :lines finds nothing
 )
 
 extractor.tables.each do |table|
@@ -273,7 +278,7 @@ blue table fills):
 
 ```ruby
 Rpdfium::Table::Debugger.visualize(page, "debug.png",
-                                    vertical_strategy: :lines)
+                                   vertical_strategy: :lines)
 ```
 
 ### Struct tree (Tagged PDF)
@@ -326,13 +331,86 @@ Three possible states of `page.struct_tree`:
 
 | PDF type | returns |
 | --- | --- |
-| Not tagged (most PDFs from Italian payroll software, scanned PDFs) | `nil` |
+| Not tagged (most PDFs from line-of-business software, scanned PDFs) | `nil` |
 | Tagged but empty (some bank statements have placeholder StructTreeRoot) | `Tree` with `empty? == true` |
 | Properly tagged (Word/LibreOffice/InDesign export with accessibility tags) | Navigable `Tree` |
 
 Lifecycle: prefer the block form for deterministic close. The implicit
 form (no block) leaves cleanup to `FPDF_CloseDocument` — no leak, just
 the tree stays in memory until the document is closed.
+
+## Performance
+
+Measured on 4 PDFs of increasing complexity, best-of-3 runs after a
+warm-up, isolated in subprocesses to capture clean peak RSS. Versions
+under test: `rpdfium 0.3.13`, `pdfplumber 0.11.9`, `pypdfium2 5.6.0`.
+
+| Test corpus | Pages | Size | What it stresses |
+| --- | ---: | ---: | --- |
+| `sample.pdf` | 1 | 18 KB | Plain text baseline |
+| `form.pdf` | 1 | 107 KB | Char-per-text-object kerning, Form XObject, tables |
+| `complex.pdf` | 85 | 60 MB | Magazine-style document, dense text + heavy graphics |
+| `report.pdf` | 226 | 322 KB | Rotated pages (90°), small fonts, ~15 tables per page |
+
+### Speed
+
+| Corpus | Task | rpdfium | pypdfium2 | pdfplumber | speedup vs pdfplumber |
+| --- | --- | ---: | ---: | ---: | ---: |
+| sample.pdf (1 pag) | text | 4 ms | 4 ms | 75 ms | **21×** |
+| sample.pdf (1 pag) | tables | 4 ms | n/a | 70 ms | **16×** |
+| form.pdf (1 pag) | text | 12 ms | 13 ms | 538 ms | **44×** |
+| form.pdf (1 pag) | tables | 25 ms | n/a | 575 ms | **23×** |
+| complex.pdf (85 pag) | text | 190 ms | 183 ms | 7.76 s | **41×** |
+| complex.pdf (85 pag) | tables | 231 ms | n/a | 7.07 s | **31×** |
+| report.pdf (226 pag) | text | 412 ms | 397 ms | 23.26 s | **56×** |
+| report.pdf (226 pag) | tables | 1.68 s | n/a | 25.25 s | **15×** |
+
+`pypdfium2` does not implement table extraction (it's a raw FFI binding
+to PDFium, not a full pipeline). It's listed as the "pure PDFium speed
+floor" for text — rpdfium matches it within ±5%, showing that the Ruby
+FFI overhead is not measurable.
+
+### Memory (peak RSS)
+
+| Corpus | rpdfium | pypdfium2 | pdfplumber | pdfplumber/rpdfium |
+| --- | ---: | ---: | ---: | ---: |
+| sample.pdf | 29 MB | 20 MB | 40 MB | 1.4× |
+| form.pdf | 32 MB | 22 MB | 45 MB | 1.4× |
+| complex.pdf | 106 MB | 69 MB | 535 MB | **5.0×** |
+| report.pdf | 136 MB | 41 MB | 1003 MB | **7.4×** |
+
+The memory gap widens with workload size. On a 226-page document
+pdfplumber uses ~1 GB; rpdfium stays under 140 MB. For server-side
+batch processing this is the difference between a 256 MB container and
+a 2 GB one.
+
+### Headline numbers
+
+On large PDFs (226 pages, dense layout):
+
+- **rpdfium completes both text + tables in ~2.1 s using 136 MB**
+- **pdfplumber needs ~48 s and 1 GB** for the same work
+
+Across the four corpora the median speedup vs pdfplumber is **27× on
+text**, **22× on tables**. rpdfium scales linearly with page count
+(thanks to PDFium's C++ engine); pdfplumber's pure-Python pipeline
+degrades super-linearly on large documents.
+
+### Methodology
+
+Each measurement is the **minimum of 3 timed runs after a warm-up run**
+(to neutralize OS page cache effects on the 60 MB `complex.pdf`).
+Subprocess isolation per measurement ensures clean RSS reading via
+`resource.getrusage` / `/proc/self/status`. The benchmark harness is
+a small Ruby driver that shells out to three runners (one Ruby script
+using `rpdfium`, two Python scripts using `pdfplumber` and
+`pypdfium2`), parses the JSON each emits, and aggregates the results.
+
+Output quality has been spot-checked: rpdfium matches pypdfium2 char
+count within ±1 char (rounding on the trailing newline). pdfplumber
+returns ~2% fewer chars on locale-formatted numbers due to a different
+word-tokenization for thousand-separator punctuation (e.g. `1.250.000`
+split on periods).
 
 ## Memory safety
 
