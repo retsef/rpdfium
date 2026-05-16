@@ -276,6 +276,64 @@ Rpdfium::Table::Debugger.visualize(page, "debug.png",
                                     vertical_strategy: :lines)
 ```
 
+### Struct tree (Tagged PDF)
+
+For tagged PDFs (PDF/UA, accessibility-friendly exports from
+Word/LibreOffice/InDesign), `Page#struct_tree` exposes the document's
+logical structure (Document → P, H1, Table, TR, TH, TD, Figure, ...)
+independently of the visual layout. This gives **zero-geometry**
+extraction with semantic typing (TH vs TD, RowSpan, ColSpan, Lang).
+
+```ruby
+page.struct_tree do |tree|
+  next if tree.nil? || tree.empty?
+
+  tree.tables.each do |table|
+    rows = table.children.select { |c| c.type == "TR" }
+    rows.each do |row|
+      cells = row.children.select { |c| %w[TH TD].include?(c.type) }
+      puts cells.map(&:text).map(&:strip).inspect
+    end
+  end
+end
+# => ["Region", "Revenue", "Growth"]      (TH)
+# => ["Italy", "1.250.000", "+12%"]       (TD)
+# => ...
+```
+
+API summary:
+
+```ruby
+tree = page.struct_tree     # → Tree or nil (nil if not tagged)
+tree.empty?                 # true for "tagged but placeholder" PDFs
+tree.roots                  # → [Element, ...]
+tree.walk { |el| ... }      # depth-first
+tree.find_all(type: "P")
+tree.tables                 # → [Element, ...] where type == "Table"
+
+element.type                # "P", "Table", "TR", "TD", ...
+element.children            # → [Element, ...]
+element.parent              # → Element or nil
+element.text                # text via MCID + ActualText override
+element.actual_text         # /ActualText (for ligature/math resolution)
+element.alt_text            # /Alt (Figure / Formula)
+element.lang                # "it-IT", "en-US", ...
+element.marked_content_ids  # → [Integer]
+element.attributes          # → { name => value }
+```
+
+Three possible states of `page.struct_tree`:
+
+| PDF type | returns |
+| --- | --- |
+| Not tagged (most PDFs from Italian payroll software, scanned PDFs) | `nil` |
+| Tagged but empty (some bank statements have placeholder StructTreeRoot) | `Tree` with `empty? == true` |
+| Properly tagged (Word/LibreOffice/InDesign export with accessibility tags) | Navigable `Tree` |
+
+Lifecycle: prefer the block form for deterministic close. The implicit
+form (no block) leaves cleanup to `FPDF_CloseDocument` — no leak, just
+the tree stays in memory until the document is closed.
+
 ## Memory safety
 
 - `FPDF_LoadMemDocument64` does **not** copy the input bytes. The
@@ -314,8 +372,8 @@ Rpdfium::Table::Debugger.visualize(page, "debug.png",
 | ✅ | Table extraction — `:explicit` strategy |
 | ✅ | Visual table debugger |
 | ✅ | [`rpdfium-binary`](https://github.com/retsef/rpdfium-binary) companion gem with prebuilt PDFium |
+| ✅ | Structure tree traversal (PDF tagged → semantic tables / `Page#struct_tree`) |
 | 🚧 | XFA form support |
-| 🚧 | Structure tree traversal (PDF tagged → semantic tables) |
 | 🔮 | OCR fallback for scanned PDFs (via tesseract bindings) |
 | 🔮 | Write APIs (we're read-only by design for now) |
 

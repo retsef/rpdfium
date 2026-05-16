@@ -1042,6 +1042,40 @@ module Rpdfium
                  .map    { |a| Form::Field.new(@document.form_env, a) }
     end
 
+    # ===== Struct Tree (PDF tagged) =====
+
+    # Struct tree della pagina (PDF/UA / Tagged PDF). Ritorna nil se la
+    # pagina non è tagged. Per PDF da Word/LibreOffice/InDesign export
+    # con accessibility tags attivati, espone la struttura logica
+    # (Document → P, H1, Table, TR, TH, TD, Figure, ecc.).
+    #
+    # Modalità d'uso:
+    #
+    #   # Lifecycle automatico (RAII via finalizer):
+    #   tree = page.struct_tree
+    #   tree&.walk { |el| puts el.type }
+    #
+    #   # Lifecycle deterministico (close al fine blocco):
+    #   page.struct_tree do |tree|
+    #     tree.tables.each { |t| ... }
+    #   end
+    #
+    # Su PDF non tagged ritorna nil. Su PDF "tagged ma vuoto" (es. CR
+    # Banca d'Italia, StructTreeRoot presente ma con element placeholder),
+    # ritorna un Tree con `Tree#empty? == true`.
+    def struct_tree
+      tree = Structure::Tree.for_page(self)
+      if block_given?
+        begin
+          yield tree
+        ensure
+          tree&.close
+        end
+      else
+        tree
+      end
+    end
+
     # ===== Rendering =====
 
     # Render a bitmap. `output` può essere :rgba (default), :bgra, :gray.

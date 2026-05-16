@@ -8,6 +8,8 @@ require_relative "rpdfium/io/png"
 
 require_relative "rpdfium/structure/outline"
 require_relative "rpdfium/structure/attachment"
+require_relative "rpdfium/structure/element"
+require_relative "rpdfium/structure/tree"
 
 require_relative "rpdfium/image/embedded"
 require_relative "rpdfium/annotation/annotation"

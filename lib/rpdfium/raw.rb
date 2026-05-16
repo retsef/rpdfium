@@ -627,6 +627,24 @@ module Rpdfium
     # =========================================================================
     # Structure tree (per PDF tagged → estrazione semantica robusta)
     # =========================================================================
+    #
+    # Per PDF "tagged" (PDF/UA, esport da Word/LibreOffice/InDesign), il
+    # `StructTreeRoot` espone una struttura logica del documento (Document
+    # → P, H1, Table, TR, TH, TD, Figure...) indipendente dal layout grafico.
+    # Ogni element può essere collegato al testo della pagina tramite
+    # `MarkedContentID`: i page objects con lo stesso MCID appartengono
+    # semanticamente a quell'element.
+    #
+    # Su PDF NON tagged (la maggior parte dei gestionali italiani):
+    # FPDF_StructTree_GetForPage ritorna NULL.
+    #
+    # Su PDF "tagged ma vuoto" (es. CR Banca d'Italia, dove il
+    # StructTreeRoot esiste con 700+ entries ma tutti gli elementi sono
+    # placeholder senza type/MCID): il tree è present ma walk produce
+    # output vuoto. Vedi `Rpdfium::Structure::Tree#empty?`.
+    typedef :pointer, :FPDF_STRUCTELEMENT_ATTR
+    typedef :pointer, :FPDF_STRUCTELEMENT_ATTR_VALUE
+
     attach_function :FPDF_StructTree_GetForPage,
                     %i[FPDF_PAGE], :FPDF_STRUCTTREE
     attach_function :FPDF_StructTree_Close, %i[FPDF_STRUCTTREE], :void
@@ -634,14 +652,85 @@ module Rpdfium
                     %i[FPDF_STRUCTTREE], :int
     attach_function :FPDF_StructTree_GetChildAtIndex,
                     %i[FPDF_STRUCTTREE int], :FPDF_STRUCTELEMENT
+
+    # Navigazione del tree
     attach_function :FPDF_StructElement_CountChildren,
                     %i[FPDF_STRUCTELEMENT], :int
     attach_function :FPDF_StructElement_GetChildAtIndex,
                     %i[FPDF_STRUCTELEMENT int], :FPDF_STRUCTELEMENT
+    attach_function :FPDF_StructElement_GetParent,
+                    %i[FPDF_STRUCTELEMENT], :FPDF_STRUCTELEMENT
+
+    # Identificazione element
     attach_function :FPDF_StructElement_GetType,
+                    %i[FPDF_STRUCTELEMENT pointer ulong], :ulong
+    attach_function :FPDF_StructElement_GetObjType,
                     %i[FPDF_STRUCTELEMENT pointer ulong], :ulong
     attach_function :FPDF_StructElement_GetTitle,
                     %i[FPDF_STRUCTELEMENT pointer ulong], :ulong
+    attach_function :FPDF_StructElement_GetID,
+                    %i[FPDF_STRUCTELEMENT pointer ulong], :ulong
+    attach_function :FPDF_StructElement_GetLang,
+                    %i[FPDF_STRUCTELEMENT pointer ulong], :ulong
+
+    # Testo "logico" overrides (accessibility, ligature resolution)
+    attach_function :FPDF_StructElement_GetActualText,
+                    %i[FPDF_STRUCTELEMENT pointer ulong], :ulong
+    attach_function :FPDF_StructElement_GetAltText,
+                    %i[FPDF_STRUCTELEMENT pointer ulong], :ulong
+    attach_function :FPDF_StructElement_GetExpansion,
+                    %i[FPDF_STRUCTELEMENT pointer ulong], :ulong
+
+    # Marked content IDs (collegano elementi → page objects con stesso MCID)
+    # GetMarkedContentID ritorna il primo MCID (per back-compat).
+    # GetMarkedContentIdCount + IdAtIndex per elementi con multiple MCID.
+    # GetChildMarkedContentID: MCID del figlio se è un MCR diretto.
+    attach_function :FPDF_StructElement_GetMarkedContentID,
+                    %i[FPDF_STRUCTELEMENT], :int
+    attach_function :FPDF_StructElement_GetMarkedContentIdCount,
+                    %i[FPDF_STRUCTELEMENT], :int
+    attach_function :FPDF_StructElement_GetMarkedContentIdAtIndex,
+                    %i[FPDF_STRUCTELEMENT int], :int
+    attach_function :FPDF_StructElement_GetChildMarkedContentID,
+                    %i[FPDF_STRUCTELEMENT int], :int
+
+    # Attributi PDF strutturali (RowSpan, ColSpan, Scope, Headers, ecc.)
+    # Sono in una sotto-API: ogni element ha 0+ attribute objects, ognuno
+    # con 0+ key/value pairs.
+    attach_function :FPDF_StructElement_GetAttributeCount,
+                    %i[FPDF_STRUCTELEMENT], :int
+    attach_function :FPDF_StructElement_GetAttributeAtIndex,
+                    %i[FPDF_STRUCTELEMENT int], :FPDF_STRUCTELEMENT_ATTR
+    attach_function :FPDF_StructElement_GetStringAttribute,
+                    %i[FPDF_STRUCTELEMENT string pointer ulong], :ulong
+
+    # Attribute getters: enumerazione key/value
+    attach_function :FPDF_StructElement_Attr_GetCount,
+                    %i[FPDF_STRUCTELEMENT_ATTR], :int
+    attach_function :FPDF_StructElement_Attr_GetName,
+                    %i[FPDF_STRUCTELEMENT_ATTR int pointer ulong pointer],
+                    :FPDF_BOOL
+    attach_function :FPDF_StructElement_Attr_GetValue,
+                    %i[FPDF_STRUCTELEMENT_ATTR string],
+                    :FPDF_STRUCTELEMENT_ATTR_VALUE
+    attach_function :FPDF_StructElement_Attr_GetType,
+                    %i[FPDF_STRUCTELEMENT_ATTR_VALUE], :int
+    attach_function :FPDF_StructElement_Attr_GetBooleanValue,
+                    %i[FPDF_STRUCTELEMENT_ATTR_VALUE pointer], :FPDF_BOOL
+    attach_function :FPDF_StructElement_Attr_GetNumberValue,
+                    %i[FPDF_STRUCTELEMENT_ATTR_VALUE pointer], :FPDF_BOOL
+    attach_function :FPDF_StructElement_Attr_GetStringValue,
+                    %i[FPDF_STRUCTELEMENT_ATTR_VALUE pointer ulong pointer],
+                    :FPDF_BOOL
+    attach_function :FPDF_StructElement_Attr_GetBlobValue,
+                    %i[FPDF_STRUCTELEMENT_ATTR_VALUE pointer ulong pointer],
+                    :FPDF_BOOL
+    # Attribute con value che è un altro array (es. Headers che è array di IDs)
+    attach_function :FPDF_StructElement_Attr_CountChildren,
+                    %i[FPDF_STRUCTELEMENT_ATTR_VALUE], :int
+    attach_function :FPDF_StructElement_Attr_GetChildAtIndex,
+                    %i[FPDF_STRUCTELEMENT_ATTR_VALUE int],
+                    :FPDF_STRUCTELEMENT_ATTR_VALUE
 
     # =========================================================================
     # Page box geometry — media/crop/bleed/trim/art box
