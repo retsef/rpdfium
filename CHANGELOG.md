@@ -3,6 +3,136 @@
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [0.3.13] - `Page#struct_tree`: struttura semantica dei PDF tagged
+
+### Aggiunto: lettura del PDF Structure Tree
+
+Nuova API `Page#struct_tree` che espone la struttura logica dei PDF
+tagged (PDF/UA, esport accessibility-friendly da Word/LibreOffice/InDesign).
+
+Per documenti tagged offre un accesso al contenuto **completamente
+indipendente dalla geometria**: per ogni element del tree è possibile
+sapere il suo tipo strutturale (`P`, `H1`, `Table`, `TR`, `TH`, `TD`,
+`Figure`, ecc.), il testo che lo compone, gli attributi PDF strutturali
+e i collegamenti via Marked Content ID al contenuto della pagina.
+
+### Esempio: estrazione tabella zero-geometria
+
+```ruby
+page.struct_tree do |tree|
+  tree.tables.each do |table|
+    rows = table.children.select { |c| c.type == "TR" }
+    rows.each do |row|
+      cells = row.children.select { |c| c.type == "TH" || c.type == "TD" }
+      texts = cells.map(&:text).map(&:strip)
+      puts texts.inspect
+    end
+  end
+end
+# → ["Region", "Revenue", "Growth"]      (TH — riga header)
+# → ["Italy", "1.250.000", "+12%"]       (TD — riga dati)
+# → ["France", "980.000", "+8%"]
+# → ["Germany", "2.100.000", "+15%"]
+```
+
+Vantaggi rispetto al pipeline geometrico `Table::Extractor`:
+
+- distingue header (`TH`) da data (`TD`) — info che il pipeline
+  geometrico perde
+- funziona su tabelle **senza linee** (text-only) o con linee parziali
+- riconosce row/col span via `<TD>.attributes` (`RowSpan`, `ColSpan`)
+- zero euristica di clustering
+
+Limitazione: richiede PDF tagged. La maggior parte dei PDF da gestionali
+italiani (TeamSystem, Zucchetti, banche italiane) NON sono tagged. Per
+quelli il pipeline geometrico esistente resta l'unica strada.
+
+### API completa
+
+```ruby
+tree = page.struct_tree     # → Tree o nil
+tree.empty?                 # true se il tree è strutturalmente vuoto
+tree.roots                  # → [Element, ...] root del tree (di solito 1 "Document")
+tree.walk { |el| ... }      # itera depth-first
+tree.walk.to_a              # Enumerator
+tree.find_all(type: "P")    # filter by type
+tree.tables                 # shortcut per find_all(type: "Table")
+
+element.type                # "P", "Table", "TR", "TD", ...
+element.children            # → [Element, ...]
+element.parent              # → Element o nil
+element.text                # ricostruisce testo da MCID + ActualText
+element.actual_text         # /ActualText attribute (override per legature, math)
+element.alt_text            # /Alt (per Figure/Formula)
+element.lang                # "it-IT", "en-US", ecc.
+element.marked_content_ids  # → [Integer]
+element.attributes          # → { name => value } (RowSpan, ColSpan, ...)
+element.walk { |el| ... }   # depth-first del sub-tree
+element.leaves              # foglie (elements senza children)
+```
+
+### Lifecycle
+
+Il tree è "owning" — chiamare `FPDF_StructTree_Close` lo dealloca.
+
+- **Lifecycle implicito (zero-config)**: non chiudere mai esplicitamente.
+  PDFium dealloca il tree alla chiusura del documento. Il tree resta in
+  memoria fino a quel momento (può essere ~MB su PDF grossi, ma niente
+  perdita persistente).
+- **Lifecycle deterministico**: usa il blocco
+  `page.struct_tree do |tree| ... end`. All'uscita dal blocco il tree
+  viene chiuso, anche in caso di eccezione.
+
+**Scelta progettuale**: non usiamo `ObjectSpace.define_finalizer` per il
+tree. Il documento può essere chiuso prima del tree (es. dentro un
+blocco `Rpdfium.open do |doc| ... end`), e il finalizer GC chiamerebbe
+`FPDF_StructTree_Close` su memoria già liberata → use-after-free →
+segfault. Lasciare la cleanup al `FPDF_CloseDocument` è sempre sicuro;
+la cleanup esplicita tramite `tree.close` o blocco è sicura purché il
+documento sia ancora vivo.
+
+### 24 binding C-level mancanti aggiunti
+
+Oltre agli 8 binding di base (già presenti):
+
+- `FPDF_StructElement_GetParent`, `GetID`, `GetLang`, `GetObjType`
+- `FPDF_StructElement_GetActualText`, `GetAltText`, `GetExpansion`
+- `FPDF_StructElement_GetMarkedContentID`, `GetMarkedContentIdCount`,
+  `GetMarkedContentIdAtIndex`, `GetChildMarkedContentID`
+- `FPDF_StructElement_GetAttributeCount`, `GetAttributeAtIndex`,
+  `GetStringAttribute`
+- `FPDF_StructElement_Attr_GetCount`, `GetName`, `GetValue`, `GetType`,
+  `GetBooleanValue`, `GetNumberValue`, `GetStringValue`, `GetBlobValue`,
+  `CountChildren`, `GetChildAtIndex`
+
+Tutte esposte via `Rpdfium::Raw.FPDF_*` per chi vuole bypassare i
+wrapper.
+
+### Tre stati possibili di `page.struct_tree`
+
+| Caso | `page.struct_tree` ritorna |
+| --- | --- |
+| PDF non tagged | `nil` |
+| PDF tagged ma vuoto (es. CR Banca d'Italia, 717 placeholder) | Tree con `empty? == true` |
+| PDF tagged correttamente (Word/LibreOffice export) | Tree navigabile |
+
+Verificato sui 4 PDF di test: busta_paga/sample/complex → nil; cu.pdf
+p1 → empty; PDF generato via `soffice --convert-to pdf` → tree completo
+con `<Document>` → `<P>`/`<Table>`/`<TR>`/`<TH>`/`<TD>` annidati.
+
+### Non-regressione
+
+Tutti i casi di test esistenti continuano a funzionare:
+
+- ✅ busta_paga.pdf: `1.993,00`, `COGNOME E NOME`, `NETTO BUSTA`
+- ✅ cu.pdf rotation 90° p1: `BANCA NAZIONALE`, `Categoria`
+- ✅ cu.pdf p199: `Categoria` (no `iCategora`)
+- ✅ sample/complex.pdf
+
+## [0.3.12] - ottimizzazioni performance estrazione tabelle
+
+(vedi note di rilascio precedenti)
+
 ## [0.3.11] - opzione `cell_padding` per char fuori bordo cella
 
 ### Aggiunto: `Table#extract(cell_padding: N)` per recuperare char border-line
