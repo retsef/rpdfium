@@ -22,6 +22,7 @@ require_relative "rpdfium/page"
 require_relative "rpdfium/util/cluster"
 require_relative "rpdfium/util/word_extractor"
 require_relative "rpdfium/util/text_extraction"
+require_relative "rpdfium/util/form_extractor"
 
 require_relative "rpdfium/table/edges"
 require_relative "rpdfium/table/cells"
