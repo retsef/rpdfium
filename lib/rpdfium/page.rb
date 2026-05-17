@@ -658,8 +658,141 @@ module Rpdfium
       mat[:a].abs
     end
 
-    # Aggrega i caratteri in "parole" via clustering layout-aware.
-    # Le parole sono sequenze di char non-spazio adiacenti orizzontalmente.
+    # ===== Form-aware extraction =====
+    #
+    # PDF di "moduli compilati" (F24, Comunicazione IVA, 770, ecc.) sono PDF
+    # di output dove il modello prestampato e i valori inseriti coesistono
+    # come testo grafico — nessun AcroForm, nessun tag PDF/UA. Il pipeline
+    # geometrico di estrazione tabelle vede il modulo intero e produce
+    # rumore (etichette del template mescolate ai dati).
+    #
+    # La strategia robusta su questi PDF è separare i char per "ruolo"
+    # usando font/altezza, che tipicamente differiscono tra il template
+    # (font proporzionali, dimensioni varie) e i dati inseriti dal
+    # gestionale (un singolo font, tipicamente Courier o Helvetica,
+    # una sola size).
+    #
+    # Esempio classico F24:
+    #   Template: Futura-Light, Futura-Bold, Futura-Heavy, Times-Bold
+    #   Dati:     Courier 10.0
+    #
+    #   page.font_inventory          # → vede tutti i (font, height)
+    #   page.chars_where(font: /Courier/i)
+    #     # → solo i char dei dati inseriti
+    #   page.lines(font: /Courier/i) # → testo dei dati riga per riga
+
+    # Distribuzione dei char per (font, altezza visiva, weight).
+    #
+    # Ritorna un Array di Hash ordinato per count decrescente:
+    #   [{ font:, height:, weight:, count:, sample: }, ...]
+    #
+    # `height` è l'altezza visiva del char in punti (bottom - top), più
+    # affidabile di `fontsize` che PDFium normalizza a 1.0 quando la
+    # dimensione reale è nella matrice CTM (caso comune sui moduli
+    # generati con scaling).
+    #
+    # `sample` sono i primi 40 char di quel gruppo, per ispezione.
+    #
+    # Usalo per scegliere il filtro `chars_where`: tipicamente il font
+    # con più char è il template, e i font minoritari (1 solo size,
+    # spesso monospace) sono i dati.
+    def font_inventory
+      groups = chars.reject { |c| c[:generated] }.group_by do |c|
+        h = (c[:bottom] - c[:top]).round(1)
+        [c[:font], h, c[:weight]]
+      end
+      groups.map do |(font, height, weight), cs|
+        {
+          font: font,
+          height: height,
+          weight: weight,
+          count: cs.size,
+          sample: cs.first(40).map { |c| c[:char] }.join
+        }
+      end.sort_by { |g| -g[:count] }
+    end
+
+    # Filtro char generico. Ritorna i char che matchano TUTTI i predicati
+    # specificati (intersezione, non unione).
+    #
+    # Argomenti supportati:
+    #   font:   String esatto, Array<String>, o Regexp
+    #   height: Float (singolo valore), Range, Array<Float>
+    #   weight: Integer o Range
+    #   bbox:   [left, top, right, bottom] in coord top-down della pagina
+    #   where:  block che riceve l'hash char, deve ritornare truthy
+    #
+    # Tutti i parametri sono opzionali; quelli passati vengono combinati
+    # in AND.
+    #
+    # Tipicamente combinato con WordExtractor per estrarre testo "pulito":
+    #
+    #   data_chars = page.chars_where(font: /Courier/i)
+    #   words = Rpdfium::Util::WordExtractor.new.extract_words(data_chars)
+    #
+    # oppure usato come building block per pipeline custom.
+    def chars_where(font: nil, height: nil, weight: nil, bbox: nil, where: nil, **char_opts)
+      cs = chars(**char_opts)
+
+      cs.select do |c|
+        next false if font && !font_matches?(c[:font], font)
+        next false if height && !range_matches?((c[:bottom] - c[:top]), height)
+        next false if weight && !range_matches?(c[:weight], weight)
+        if bbox
+          left, top, right, bottom = bbox
+          hm = (c[:x0] + c[:x1]) / 2.0
+          vm = (c[:top] + c[:bottom]) / 2.0
+          next false unless hm >= left && hm < right && vm >= top && vm < bottom
+        end
+        next false if where && !where.call(c)
+        true
+      end
+    end
+
+    # Raggruppa i char filtrati in righe logiche e ritorna un Array di
+    # stringhe (una per riga, top-to-bottom, char dentro la riga
+    # left-to-right). Conveniente quando il PDF è un modulo compilato
+    # e vuoi solo i valori inseriti come righe pulite.
+    #
+    # Esempio F24:
+    #
+    #   page.lines(font: /Courier/i)
+    #   # => ["Soggetto:  Azienda S.R.L.",
+    #   #     "0  2  0  9  8  1  2  0  6  8  2",
+    #   #     "Azienda S.R.L.",
+    #   #     "1001  11  2021  499,81  0,00",
+    #   #     "1712  12  2021  32,46  0,00",
+    #   #     "1701  11  2021  0,00  295,89",
+    #   #     "532,27  295,89  236,38",
+    #   #     ...]
+    #
+    # I parametri di filtro sono gli stessi di `chars_where`. I parametri
+    # `x_tolerance` e `y_tolerance` controllano il WordExtractor.
+    #
+    # Il separatore inter-word è due spazi (per leggibilità su moduli con
+    # campi spaziati); cambialo con `separator:`.
+    def lines(x_tolerance: 3.0, y_tolerance: 3.0, separator: "  ",
+              font: nil, height: nil, weight: nil, bbox: nil, where: nil,
+              **char_opts)
+      cs = chars_where(font: font, height: height, weight: weight,
+                       bbox: bbox, where: where, **char_opts)
+      return [] if cs.empty?
+
+      we = Util::WordExtractor.new(x_tolerance: x_tolerance,
+                                    y_tolerance: y_tolerance)
+      words = we.extract_words(cs)
+      return [] if words.empty?
+
+      # Cluster per top (con tolleranza), poi ordina per x0 dentro la riga
+      rows = Util::Cluster.cluster_objects(words, :top, tolerance: y_tolerance)
+      rows.map do |row_words|
+        row_words.sort_by { |w| w[:x0] }.map { |w| w[:text] }.join(separator)
+      end
+    end
+
+    # ===== Words =====
+
+
     def words(x_tolerance: 3.0, y_tolerance: 3.0, **char_opts)
       cs = chars(**char_opts)
       return [] if cs.empty?
@@ -1143,6 +1276,32 @@ module Rpdfium
     end
 
     private
+
+    # Match helper per il parametro `font:` di chars_where/lines.
+    def font_matches?(actual_font, pattern)
+      return false if actual_font.nil?
+
+      case pattern
+      when String  then actual_font == pattern
+      when Regexp  then actual_font.match?(pattern)
+      when Array   then pattern.any? { |p| font_matches?(actual_font, p) }
+      else false
+      end
+    end
+
+    # Match helper per parametri numerici (`height:`, `weight:`).
+    # Accetta singolo valore, Range, o Array<Numeric>. Per singolo valore
+    # numeric usa tolleranza 0.05 (utile per height in punti).
+    def range_matches?(actual, spec)
+      return false if actual.nil?
+
+      case spec
+      when Range    then spec.cover?(actual)
+      when Array    then spec.any? { |s| range_matches?(actual, s) }
+      when Numeric  then (actual - spec).abs < 0.1
+      else false
+      end
+    end
 
     # Converte un box PDFium {left, bottom, right, top} in coord bottom-up
     # alla tuple top-down [x0, top, x1, bottom] usata dal resto della

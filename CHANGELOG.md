@@ -3,6 +3,124 @@
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [0.3.14] - estrazione form-aware tramite font filtering
+
+### Aggiunto: `Page#font_inventory`, `Page#chars_where`, `Page#lines`
+
+Tre nuove API per estrarre dati da PDF di "moduli compilati" — F24,
+comunicazioni IVA, modelli 770, dichiarazioni dei redditi e in generale
+qualsiasi PDF di output da gestionali in cui il template grafico del
+modulo e i dati inseriti dall'utente coesistono come testo statico
+(nessun AcroForm, nessun tag PDF/UA).
+
+Su questi PDF il pipeline `Table::Extractor` produce molto rumore
+perché vede il modulo intero (etichette del template + dati) come una
+griglia di tabelle. La soluzione semantica è separare i char per
+"ruolo" usando il font/altezza: tipicamente il template usa font
+proporzionali (Futura, Helvetica, Times) mentre i dati inseriti dal
+gestionale usano un singolo font (di solito Courier o Helvetica a una
+size specifica).
+
+### `Page#font_inventory`
+
+Distribuzione dei char per `(font, altezza, weight)`, ordinata per
+count decrescente. Utile per scoprire empiricamente quale font usano
+i dati su un modulo sconosciuto:
+
+```ruby
+page.font_inventory.first(5).each do |g|
+  puts "#{g[:font].ljust(20)} h=#{g[:height]} w=#{g[:weight]} | #{g[:count]} char | #{g[:sample][0,40]}"
+end
+# Futura-Light          h=8.3   w=225  |   946 char | "cognome, denominazione o ragione sociale"
+# Courier               h=10.5  w=0    |   365 char | "000000000000Azienda S.R.L.P"
+# Futura-Bold           h=10.4  w=868  |   249 char | "CODICE FISCALEDATI ANAGRAFICIDOMICILIO F"
+# Futura-Light          h=8.9   w=225  |   194 char | "PROV.CODICE BANCA/POSTE/AGENTE DELLA RIS"
+# Futura-Bold           h=11.7  w=868  |   169 char | "CONTRIBUENTESEZIONE ERARIOSEZIONE INPSSE"
+```
+
+`height` è l'altezza visiva del char in punti (più affidabile di
+`fontsize` che PDFium normalizza a 1.0 quando la dimensione reale è
+nella matrice CTM, caso frequente sui moduli scalati).
+
+### `Page#chars_where(font:, height:, weight:, bbox:, where:)`
+
+Filtro generico sui char. Tutti i parametri sono opzionali e
+combinabili in AND:
+
+- `font:` String esatto, Array di String, o Regexp
+- `height:` Float (con tolleranza 0.1pt), Range, o Array
+- `weight:` Integer o Range
+- `bbox:` `[left, top, right, bottom]` in coord top-down
+- `where:` block per filtri arbitrari
+
+```ruby
+data_chars = page.chars_where(font: "Courier")
+# oppure
+data_chars = page.chars_where(font: /courier/i, height: 8.0..12.0)
+# oppure con bbox
+sezione_erario = page.chars_where(font: "Courier", bbox: [0, 250, 595, 400])
+```
+
+### `Page#lines(font:, ...)`
+
+Helper di alto livello che combina `chars_where` + WordExtractor +
+clustering per riga. Ritorna un Array di stringhe, una per riga
+(top-to-bottom, char dentro la riga left-to-right):
+
+```ruby
+# F24
+Rpdfium.open("f24.pdf") do |doc|
+  doc.page(0).lines(font: "Courier")
+end
+# => [
+#   "Soggetto:  Azienda S.R.L.",
+#   "Azienda S.R.L.",
+#   "1001  11  2021  499,81  0,00",
+#   "1712  12  2021  32,46  0,00",
+#   "1701  11  2021  0,00  295,89",
+#   "532,27  295,89  236,38",
+#   "1900  DM10  1903071322  11  2021  1.253,00  0,00",
+#   ...
+#   "1.615,90"
+# ]
+```
+
+Funziona ugualmente bene su:
+- **F24**: codici tributo, importi a debito/credito, sezioni separate
+- **Comunicazione IVA**: importi del Quadro VP (operazioni attive/passive,
+  IVA esigibile/detratta, dovuta/credito)
+- **Modello 770**: ritenute mese per mese con codici tributo e date di
+  versamento
+- **Dichiarazione redditi (SP, PF, SC)**: dati anagrafici e quadri
+
+### Tradeoff e limitazioni
+
+`Page#lines` ritorna righe **leggibili**, non già strutturate. Su
+moduli con caselle separate per cifra (es. il codice fiscale o numeri italiani con casella decimali separata
+`15.357,78` → `15.357 7 8`), i gap visivi tra caselline superano
+`x_tolerance` di default e le righe risultano "spaziate". Soluzioni:
+
+1. Aumentare `x_tolerance` per quei filtri specifici (es. 8.0)
+2. Post-elaborare le righe per riconoscere il pattern del modulo
+   (specifico per ogni modello)
+
+La libreria fornisce le primitive composable; l'interpretazione del
+modulo specifico resta al chiamante perché ogni modello ha layout
+diverso.
+
+### Non-regressione
+
+✅ busta_paga.pdf: `1.993,00`, `COGNOME E NOME`, `NETTO BUSTA`
+✅ cu.pdf p1 rotation 90°: `BANCA NAZIONALE`, `Categoria`
+✅ cu.pdf p199 small font: `Categoria` (no `iCategora`)
+✅ sample.pdf, complex.pdf
+
+### API compatibility
+
+Nessuna breaking change. Le tre nuove API sono additive. Il pipeline
+`Table::Extractor` esistente continua a funzionare invariato per chi
+ha tabelle "vere" con bordi.
+
 ## [0.3.13] - `Page#struct_tree`: struttura semantica dei PDF tagged
 
 ### Aggiunto: lettura del PDF Structure Tree

@@ -281,6 +281,56 @@ Rpdfium::Table::Debugger.visualize(page, "debug.png",
                                    vertical_strategy: :lines)
 ```
 
+### Form-aware extraction (font filtering)
+
+Some PDFs are "filled-out forms" — F24, tax declarations, payment
+slips, government forms — where the form template and the entered
+data both exist as static graphics text on the page (no AcroForm
+fields, no tagged structure). On these PDFs the table pipeline picks
+up the template labels as noise alongside the data.
+
+The robust strategy is to separate chars by **role** using their
+font: the template typically uses proportional fonts (Futura, Times,
+Helvetica) while the data layer uses a single font (often Courier
+monospace, or Helvetica at a specific size).
+
+```ruby
+Rpdfium.open("f24.pdf") do |doc|
+  page = doc.page(0)
+
+  # Discover what fonts are on the page
+  page.font_inventory.first(5).each do |g|
+    puts "#{g[:font].ljust(20)} h=#{g[:height]} | #{g[:count]} chars | #{g[:sample][0,40]}"
+  end
+  # Futura-Light          h=8.3  |  946 chars | "cognome, denominazione o ragione sociale"
+  # Courier               h=10.5 |  365 chars | "00000000000Azienda S.R.L.P"
+  # Futura-Bold           h=10.4 |  249 chars | "CODICE FISCALEDATI ANAGRAFICI..."
+  # ...
+
+  # Extract just the entered data, line by line
+  page.lines(font: "Courier").each { |l| puts l }
+  # => "Soggetto:  Azienda S.R.L."
+  # => "1001  11  2021  499,81  0,00"
+  # => "1712  12  2021  32,46  0,00"
+  # => "1701  11  2021  0,00  295,89"
+  # => "532,27  295,89  236,38"
+  # => ...
+end
+```
+
+Three primitives:
+
+- `Page#font_inventory` — distribution by `(font, height, weight)`,
+  with counts and samples for ispection
+- `Page#chars_where(font:, height:, weight:, bbox:, where:)` —
+  filter chars by any combination of criteria
+- `Page#lines(font:, ...)` — high-level helper: filter + word
+  extraction + line clustering, returns `Array<String>`
+
+Works on F24 payment forms, VAT periodic communications, withholding
+tax declarations, and similar government forms — anywhere the data
+sits on a printed template as text.
+
 ### Struct tree (Tagged PDF)
 
 For tagged PDFs (PDF/UA, accessibility-friendly exports from
@@ -451,6 +501,7 @@ split on periods).
 | ✅ | Visual table debugger |
 | ✅ | [`rpdfium-binary`](https://github.com/retsef/rpdfium-binary) companion gem with prebuilt PDFium |
 | ✅ | Structure tree traversal (PDF tagged → semantic tables / `Page#struct_tree`) |
+| ✅ | Form-aware extraction via font filtering (`Page#font_inventory`, `chars_where`, `lines`) |
 | 🚧 | XFA form support |
 | 🔮 | OCR fallback for scanned PDFs (via tesseract bindings) |
 | 🔮 | Write APIs (we're read-only by design for now) |
