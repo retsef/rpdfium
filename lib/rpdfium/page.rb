@@ -757,9 +757,10 @@ module Rpdfium
     # Esempio F24:
     #
     #   page.lines(font: /Courier/i)
-    #   # => ["Soggetto:  MANAGEMENT  CONSULTING  S.R.L.  ( 02098120682 )",
-    #   #     "0  2  0  9  8  1  2  0  6  8  2",
-    #   #     "MANAGEMENT  CONSULTING  S.R.L.",
+    #   # => ["Soggetto:  Azienda  S.R.L.  ( 01234567890 )",
+    #   #     "0  1  2  3  4  5  6  7  8  9  0",
+    #   #     "Azienda  S.R.L.",
+    #   #     "CITTA  XX  VIA  ESEMPIO
     #   #     "1001  11  2021  499,81  0,00",
     #   #     "1712  12  2021  32,46  0,00",
     #   #     "1701  11  2021  0,00  295,89",
@@ -801,33 +802,41 @@ module Rpdfium
     #   "template". Se nil, usa tutti i char che NON sono in `data_font`.
     # @param data_filter [Proc, nil] filtro aggiuntivo opzionale sul testo
     #   dei valori (es. `->(t) { t.match?(/^[\d.,]+$/) }` per soli numeri).
+    # @param merge_adjacent [Boolean, Symbol] strategia di unione word
+    #   adiacenti sulla stessa riga:
+    #   - false (default): no merge
+    #   - true o :by_label: fonde SOLO word con stessa label col (conserva
+    #     i checkbox sotto label distinte). Usa per moduli con flag/checkbox
+    #     come 770 quadri compilati ST/SV/SX.
+    #   - :by_proximity: fonde tutte le word adiacenti indipendentemente
+    #     dalla label. Usa per header con testo libero (es. "Soggetto:
+    #     AAA BBB CCC ( 12345 )" come single value).
+    #   - :smart: combina i due — by_label per word con label, by_proximity
+    #     per word orfane senza label. Raccomandato per moduli complessi
+    #     come 770 che mescolano header testuali e tabelle con flag.
+    # @param merge_x_gap [Float] gap massimo in punti tra word adiacenti per
+    #   essere unite (default 20.0).
+    # @param as_hash [Boolean] se true ritorna `{ "label" => value, ... }`
+    #   invece di Array<Hash>. La label è scelta tra `col` e `row`
+    #   preferendo quella esplicita: row se la label `col` è già di colonna
+    #   ovvia, altrimenti col. In caso di label duplicate, le entries
+    #   vengono raggruppate in Array. Default false.
     # @param matcher [LabelMatcher, nil] istanza preconfigurata. Se nil,
-    #   ne crea una con i default. Personalizzala per tarare tolleranze.
-    # @param x_tolerance, y_tolerance [Float] tolleranze per il word
-    #   extractor (sia su data che su template).
+    #   ne crea una con i default.
+    # @param x_tolerance, y_tolerance [Float] tolleranze per il word extractor.
     #
-    # @return [Array<Hash>] uno per valore, formato:
+    # @return [Array<Hash>, Hash] per default Array<Hash>:
     #   ```
-    #   {
-    #     value: "499,81",
-    #     labels: {
-    #       col: "importi a debito versati",   # label SOPRA, stessa colonna
-    #       row: "TOTALE A"                     # label A SINISTRA, stessa riga
-    #     },
-    #     geometry: { x0:, x1:, top:, bottom: }
-    #   }
+    #   { value: "499,81",
+    #     labels: { col: "importi a debito versati", row: "TOTALE A" },
+    #     geometry: { x0:, x1:, top:, bottom: } }
     #   ```
-    #
-    # Esempio F24:
-    #   page.label_value_pairs(data_font: "Courier",
-    #                          template_font: /^Futura/,
-    #                          data_filter: ->(t) { t.match?(/^[\d.,]+$/) })
-    #   # => [{ value: "499,81",
-    #   #       labels: { col: "importi a debito versati", row: nil }, ...},
-    #   #     { value: "1.615,90",
-    #   #       labels: { col: "SALDO (M-N) +/–", row: "EURO +" }, ...}]
+    #   Con `as_hash: true` ritorna `{ "label" => value }` o
+    #   `{ "label" => [value, value, ...] }` se duplicate.
     def label_value_pairs(data_font:, template_font: nil,
                           data_filter: nil, matcher: nil,
+                          merge_adjacent: false, merge_x_gap: 20.0,
+                          as_hash: false,
                           x_tolerance: 3.0, y_tolerance: 3.0)
       data_chars = chars_where(font: data_font)
       anchor_chars =
@@ -846,8 +855,186 @@ module Rpdfium
       anchor_words = we.extract_words(anchor_chars)
 
       m = matcher || Util::LabelMatcher.new
-      m.match(data_words, anchor_words)
+
+      case merge_adjacent
+      when true, :by_label
+        prelim = m.match(data_words, anchor_words)
+        data_words = merge_adjacent_words_by_label(data_words, prelim,
+                                                    x_gap: merge_x_gap,
+                                                    y_tol: y_tolerance)
+      when :by_proximity, :aggressive
+        data_words = merge_adjacent_words(data_words, x_gap: merge_x_gap,
+                                                      y_tol: y_tolerance)
+      when :smart
+        # 1° pass by_label: protegge i checkbox e word con label distinte
+        prelim = m.match(data_words, anchor_words)
+        data_words = merge_adjacent_words_by_label(data_words, prelim,
+                                                    x_gap: merge_x_gap,
+                                                    y_tol: y_tolerance)
+        # 2° pass: re-match e fonde solo word ORFANE (no col label) adiacenti
+        prelim2 = m.match(data_words, anchor_words)
+        data_words = merge_adjacent_unlabeled(data_words, prelim2,
+                                               x_gap: merge_x_gap,
+                                               y_tol: y_tolerance)
+      end
+
+      pairs = m.match(data_words, anchor_words)
+
+      as_hash ? pairs_to_hash(pairs) : pairs
     end
+
+    private
+
+    # Unisce word adiacenti SOLO se hanno la stessa label col (o entrambe
+    # senza label). Evita di fondere checkbox sotto label distinte.
+    def merge_adjacent_words_by_label(words, prelim_pairs, x_gap:, y_tol:)
+      return [] if words.empty?
+
+      # Word indicizzata per text+geometria → label col (può essere nil)
+      label_of = {}
+      prelim_pairs.each do |p|
+        key = [p[:value], p[:geometry][:x0].round(1), p[:geometry][:top].round(1)]
+        label_of[key] = p[:labels][:col]
+      end
+      get_label = lambda do |w|
+        label_of[[w[:text], w[:x0].round(1), w[:top].round(1)]]
+      end
+
+      sorted = words.sort_by { |w| [w[:top].round(1), w[:x0]] }
+      groups = []
+      current = [sorted.first]
+      sorted.drop(1).each do |w|
+        prev = current.last
+        on_same_row = (w[:top] - prev[:top]).abs <= y_tol
+        adjacent = w[:x0] - prev[:x1] <= x_gap && w[:x0] >= prev[:x0]
+        same_label = get_label.call(w) == get_label.call(prev)
+        if on_same_row && adjacent && same_label
+          current << w
+        else
+          groups << current
+          current = [w]
+        end
+      end
+      groups << current
+
+      groups.map { |g| merge_word_group(g) }
+    end
+
+    def merge_word_group(group)
+      return group.first if group.size == 1
+
+      {
+        text: group.map { |w| w[:text] }.join(" "),
+        x0: group.map { |w| w[:x0] }.min,
+        x1: group.map { |w| w[:x1] }.max,
+        top: group.map { |w| w[:top] }.min,
+        bottom: group.map { |w| w[:bottom] }.max
+      }
+    end
+
+    # Fonde solo le word che non hanno una col label (orfane), lasciando
+    # intatte quelle con label distinte. Per la strategia :smart.
+    def merge_adjacent_unlabeled(words, prelim_pairs, x_gap:, y_tol:)
+      return [] if words.empty?
+
+      label_of = {}
+      prelim_pairs.each do |p|
+        key = [p[:value], p[:geometry][:x0].round(1), p[:geometry][:top].round(1)]
+        label_of[key] = p[:labels][:col]
+      end
+      unlabeled = lambda do |w|
+        label_of[[w[:text], w[:x0].round(1), w[:top].round(1)]].nil?
+      end
+
+      sorted = words.sort_by { |w| [w[:top].round(1), w[:x0]] }
+      groups = []
+      current = [sorted.first]
+      sorted.drop(1).each do |w|
+        prev = current.last
+        on_same_row = (w[:top] - prev[:top]).abs <= y_tol
+        adjacent = w[:x0] - prev[:x1] <= x_gap && w[:x0] >= prev[:x0]
+        both_unlabeled = unlabeled.call(prev) && unlabeled.call(w)
+        if on_same_row && adjacent && both_unlabeled
+          current << w
+        else
+          groups << current
+          current = [w]
+        end
+      end
+      groups << current
+
+      groups.map { |g| merge_word_group(g) }
+    end
+
+    # (legacy, unused after the label-aware merge; kept for reference)
+    def merge_adjacent_words(words, x_gap:, y_tol:)
+      return [] if words.empty?
+
+      sorted = words.sort_by { |w| [w[:top].round(1), w[:x0]] }
+      groups = []
+      current = [sorted.first]
+      sorted.drop(1).each do |w|
+        prev = current.last
+        on_same_row = (w[:top] - prev[:top]).abs <= y_tol
+        adjacent = w[:x0] - prev[:x1] <= x_gap && w[:x0] >= prev[:x0]
+        if on_same_row && adjacent
+          current << w
+        else
+          groups << current
+          current = [w]
+        end
+      end
+      groups << current
+
+      groups.map { |g| merge_word_group(g) }
+    end
+
+    # Converte pairs (Array<Hash>) in Hash { label => value } scegliendo
+    # automaticamente la label più informativa tra col e row.
+    # Le entry senza label confluiscono sotto la chiave "_unlabeled".
+    def pairs_to_hash(pairs)
+      result = {}
+      unlabeled = []
+      pairs.each do |p|
+        label = best_label_for(p[:labels])
+        if label.nil? || label.empty?
+          unlabeled << p[:value]
+          next
+        end
+
+        if result.key?(label)
+          existing = result[label]
+          result[label] = existing.is_a?(Array) ? existing + [p[:value]] : [existing, p[:value]]
+        else
+          result[label] = p[:value]
+        end
+      end
+      result["_unlabeled"] = unlabeled if unlabeled.any?
+      result
+    end
+
+    # Heuristica per scegliere la label "principale" tra col e row.
+    # - Se entrambe presenti: preferisce row se la row è breve (è un
+    #   identificatore univoco di riga), altrimenti col.
+    # - Se una sola presente, la usa.
+    def best_label_for(labels)
+      col = labels[:col]
+      row = labels[:row]
+      return row if col.nil? && row
+      return col if row.nil? && col
+      return nil if col.nil? && row.nil?
+
+      # Entrambe presenti: preferisci la più informativa.
+      # Heuristica: row di solito è una label breve identificatrice
+      # (es. "Codice fiscale", "Codice attività", "ST", "Dipendente").
+      # col tipicamente è più lunga e descrittiva.
+      # In caso di ambiguità preferisco quella che NON è già contenuta
+      # nell'altra (sotto-stringa).
+      return row if col.include?(row) || row.length > col.length / 2
+      col
+    end
+
+    public
 
     # ===== Words =====
 

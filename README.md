@@ -365,6 +365,47 @@ each value finds:
 For finer control over the clustering / matching thresholds, use
 `Rpdfium::Util::LabelMatcher` directly.
 
+#### Structured output and multi-word values
+
+By default `label_value_pairs` returns one entry per extracted word.
+On forms with header lines (e.g. "Soggetto: AAA BBB CCC ( 12345 )")
+or multi-page declarations, that's noisy. Two extra options shape
+the output to be **consumer-ready**:
+
+- `merge_adjacent:` — strategy for joining adjacent words on the
+  same line:
+  - `false` (default) — no merging
+  - `:by_label` — merge only if same column label (preserves checkbox
+    grids like 770 quadri compilati ST/SV/SX)
+  - `:by_proximity` — always merge adjacent words on the same line
+  - `:smart` — by_label for labelled words, by_proximity for orphans
+    (recommended for complex multi-section forms)
+- `as_hash: true` — return `Hash{label => value}` instead of
+  `Array<Hash>`. Duplicate labels become arrays.
+
+```ruby
+Rpdfium.open("770.pdf") do |doc|
+  doc.page(1).label_value_pairs(
+    data_font: "Courier",
+    merge_adjacent: :smart,
+    as_hash: true
+  )
+end
+# => {
+#   "Codice fiscale" => "01234567890",
+#   "Codice attività" => "999999",
+#   "Indirizzo di posta elettronica/PEC" => "AZIENDA@PEC.IT",
+#   "ST" => "X", "SV" => "X", "SX" => "X",  # checkbox preserved
+#   "Dipendente" => "X",
+#   "Tipologia invio" => "2",
+#   ...
+# }
+```
+
+Words without an associated template label confluiscono sotto la chiave
+`"_unlabeled"` come array di stringhe. Utile per estrarre stamp /
+header / footer libero che non ha un campo di template di riferimento.
+
 ### Struct tree (Tagged PDF)
 
 For tagged PDFs (PDF/UA, accessibility-friendly exports from

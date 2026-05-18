@@ -8,6 +8,151 @@ Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+# Changelog
+
+Tutte le modifiche notevoli a questo progetto.
+Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
+
+## [0.3.16] - estrazione strutturata su moduli multi-pagina
+
+### Aggiunto: `label_value_pairs(merge_adjacent:, as_hash:)`
+
+Due nuove opzioni a `Page#label_value_pairs` che trasformano l'output da
+"lista di pair grezza" a **mappa strutturata `{label => valore}` pronta
+da consumare**, gestendo correttamente sia campi puntuali (checkbox,
+codici) che testo libero multi-word (denominazioni, indirizzi, header).
+
+### `merge_adjacent` — 3 strategie selezionabili
+
+- **`false` (default)**: nessuna unione. Una word PDF = una entry.
+  Comportamento 0.3.15.
+
+- **`true` o `:by_label`**: fonde solo word adiacenti con la **stessa
+  label col**. Conserva checkbox sotto label distinte (es. su 770 le
+  X dei quadri compilati ST/SV/SX restano separate perché ognuna ha
+  la sua label).
+
+- **`:by_proximity`**: fonde tutte le word adiacenti indipendentemente
+  dalla label. Per header con testo libero (es. "Soggetto: Azienda
+  S.R.L. ( 01234567890 )" diventa una entry sola).
+
+- **`:smart` (raccomandato per moduli complessi)**: combina i due —
+  by_label per word con label, by_proximity per word **orfane** senza
+  label. Funziona automaticamente su moduli che mescolano header
+  testuali (Soggetto), tabelle con checkbox (ST/SV/SX) e campi singoli
+  (codice fiscale, codice attività).
+
+### `as_hash: true` — output strutturato
+
+Trasforma `Array<Hash>` in `Hash` chiavi-valore:
+
+```ruby
+Rpdfium.open("770.pdf") do |doc|
+  doc.page(1).label_value_pairs(
+    data_font: "Courier",
+    merge_adjacent: :smart,
+    as_hash: true
+  )
+end
+
+# => {
+#   "Codice fiscale" => "01234567890",
+#   "Codice attività" => "999999",
+#   "Indirizzo di posta elettronica/PEC" => "AZIENDA@PEC.IT",
+#   "Stato (tab. SA)" => "1",
+#   "Situazione (tab. SC)" => "6",
+#   "ST" => "X",
+#   "SV" => "X",
+#   "SX" => "X",
+#   "Dipendente" => "X",
+#   "Tipologia invio" => "2",
+#   ...
+# }
+```
+
+Quando la label è la stessa per più valori, l'output diventa un Array:
+`"Codice fiscale" => ["01234567890", "01234567890"]`.
+
+Le word senza label associabile (es. header in alto pagina senza
+template di riferimento) confluiscono sotto la chiave `"_unlabeled"`
+come Array di stringhe.
+
+### Esempio: estrazione completa di un Modello 770
+
+```ruby
+Rpdfium.open("770.pdf") do |doc|
+  doc.each_with_index do |page, i|
+    inv = page.font_inventory
+    data_font = inv.find { |g| g[:font]&.match?(/courier/i) }&.dig(:font)
+    next unless data_font
+
+    h = page.label_value_pairs(
+      data_font: data_font,
+      merge_adjacent: :smart,
+      as_hash: true
+    )
+    puts "=== Pagina #{i + 1} ==="
+    h.each { |k, v| puts "  #{k}: #{v.inspect}" }
+  end
+end
+```
+
+Output reale su modello 770 (3 prime pagine):
+
+```
+=== Pagina 1 ===
+  _unlabeled: ["Soggetto: Azienda S.R.L. ( 01234567890 )",
+               "Identificativo dichiarazione: 11111111111 - 0000002 del 22/10/2022"]
+
+=== Pagina 2 ===
+  Codice fiscale: ["01234567890", "01234567890"]
+  Codice attività: "999999"
+  Indirizzo di posta elettronica/PEC: "AZIENDA@PEC.IT"
+  Stato (tab. SA): "1"
+  Situazione (tab. SC): "6"
+  ST: "X"
+  SV: "X"
+  SX: "X"
+  Dipendente: "X"
+  Tipologia invio: "2"
+  GESTIONE SEPARATA Dipendente Autonomo: "X"
+
+=== Pagina 3 ===
+  Codice fiscale: "01234567890"
+  Codice fiscale dell'incaricato: "01877150696"
+  giorno mese: "01 10"
+  anno: "2022"
+  _unlabeled: ["2", "Firma Presente"]
+```
+
+### `merge_x_gap` per tarare il merge
+
+Parametro `merge_x_gap:` controlla il gap massimo (in punti) tra word
+adiacenti per essere considerate "unite". Default 20.0. Aumentalo per
+moduli con campi molto spaziati (header centrati su pagina).
+
+### Heuristica `best_label_for` (interna)
+
+Quando il valore ha sia `col` che `row` label, la scelta automatica
+preferisce:
+- `row` se è una label breve identificatrice ("ST", "Codice fiscale")
+- `col` quando è più descrittiva ("importi a debito versati")
+
+Per controllo fine, usa la API base senza `as_hash: true` e leggi
+direttamente `p[:labels][:col]` e `p[:labels][:row]`.
+
+### Non-regressione
+
+✅ busta_paga.pdf, cu.pdf p1, cu.pdf p199, sample, complex, F24, IVA
+— tutti i test invariati.
+
+✅ Il default di `merge_adjacent: false` mantiene il comportamento
+0.3.15 byte-per-byte. La 0.3.16 è purely additiva.
+
+### API compatibility
+
+Nessuna breaking change.
+
 ## [0.3.15] - associazione label-valore su moduli compilati
 
 ### Aggiunto: `Page#label_value_pairs` e `Util::LabelMatcher`
