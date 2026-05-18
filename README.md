@@ -303,13 +303,13 @@ Rpdfium.open("f24.pdf") do |doc|
     puts "#{g[:font].ljust(20)} h=#{g[:height]} | #{g[:count]} chars | #{g[:sample][0,40]}"
   end
   # Futura-Light          h=8.3  |  946 chars | "cognome, denominazione o ragione sociale"
-  # Courier               h=10.5 |  365 chars | "00000000000Azienda S.R.L.P"
+  # Courier               h=10.5 |  365 chars | "01234567890Azienda S.R.L.P"
   # Futura-Bold           h=10.4 |  249 chars | "CODICE FISCALEDATI ANAGRAFICI..."
   # ...
 
   # Extract just the entered data, line by line
   page.lines(font: "Courier").each { |l| puts l }
-  # => "Soggetto:  Azienda S.R.L."
+  # => "Soggetto:  Azienda S.R.L.  ( 01234567890 )"
   # => "1001  11  2021  499,81  0,00"
   # => "1712  12  2021  32,46  0,00"
   # => "1701  11  2021  0,00  295,89"
@@ -330,6 +330,40 @@ Three primitives:
 Works on F24 payment forms, VAT periodic communications, withholding
 tax declarations, and similar government forms — anywhere the data
 sits on a printed template as text.
+
+#### Label-value pairing
+
+`Page#label_value_pairs` goes one step further: it associates each
+extracted value with the semantic label from the template that
+describes it. Useful when you want machine-readable
+`field_name → field_value` pairs without hard-coding the form layout.
+
+```ruby
+Rpdfium.open("f24.pdf") do |doc|
+  pairs = doc.page(0).label_value_pairs(
+    data_font: "Courier",
+    template_font: /^Futura/,
+    data_filter: ->(t) { t.match?(/^[\d.,]+$/) }
+  )
+  pairs.each do |p|
+    col = p[:labels][:col]
+    row = p[:labels][:row]
+    puts "#{p[:value].ljust(12)} → col: #{col}, row: #{row}"
+  end
+end
+# 499,81    → col: "importi a debito versati"
+# 1001      → col: "codice tributo"
+# 532,27    → col: "importi a debito versati", row: "A"
+# 1.615,90  → col: "SALDO (M-N) +/–", row: "EURO +"   ← saldo finale
+```
+
+The algorithm clusters template words into coherent labels, then for
+each value finds:
+- the `:col` label (positioned above, in the same column)
+- the `:row` label (positioned to the left, on the same row)
+
+For finer control over the clustering / matching thresholds, use
+`Rpdfium::Util::LabelMatcher` directly.
 
 ### Struct tree (Tagged PDF)
 
@@ -502,6 +536,7 @@ split on periods).
 | ✅ | [`rpdfium-binary`](https://github.com/retsef/rpdfium-binary) companion gem with prebuilt PDFium |
 | ✅ | Structure tree traversal (PDF tagged → semantic tables / `Page#struct_tree`) |
 | ✅ | Form-aware extraction via font filtering (`Page#font_inventory`, `chars_where`, `lines`) |
+| ✅ | Semantic label-value pairing on filled forms (`Page#label_value_pairs`, `Util::LabelMatcher`) |
 | 🚧 | XFA form support |
 | 🔮 | OCR fallback for scanned PDFs (via tesseract bindings) |
 | 🔮 | Write APIs (we're read-only by design for now) |

@@ -757,9 +757,9 @@ module Rpdfium
     # Esempio F24:
     #
     #   page.lines(font: /Courier/i)
-    #   # => ["Soggetto:  Azienda S.R.L.",
+    #   # => ["Soggetto:  MANAGEMENT  CONSULTING  S.R.L.  ( 02098120682 )",
     #   #     "0  2  0  9  8  1  2  0  6  8  2",
-    #   #     "Azienda S.R.L.",
+    #   #     "MANAGEMENT  CONSULTING  S.R.L.",
     #   #     "1001  11  2021  499,81  0,00",
     #   #     "1712  12  2021  32,46  0,00",
     #   #     "1701  11  2021  0,00  295,89",
@@ -788,6 +788,65 @@ module Rpdfium
       rows.map do |row_words|
         row_words.sort_by { |w| w[:x0] }.map { |w| w[:text] }.join(separator)
       end
+    end
+
+    # Associa label semantiche del template ai valori inseriti sulla pagina.
+    # Per moduli compilati (F24, Comunicazione IVA, 770, ecc.) dove il
+    # template e i dati sono entrambi testo statico ma in font diversi.
+    #
+    # @param data_font [String, Regexp, Array] font del layer "dati" inseriti.
+    #   Tipicamente Courier (F24, 770) o Helvetica (Comunicazione IVA).
+    #   Vedi `Page#font_inventory` per identificarlo.
+    # @param template_font [String, Regexp, Array, nil] font del layer
+    #   "template". Se nil, usa tutti i char che NON sono in `data_font`.
+    # @param data_filter [Proc, nil] filtro aggiuntivo opzionale sul testo
+    #   dei valori (es. `->(t) { t.match?(/^[\d.,]+$/) }` per soli numeri).
+    # @param matcher [LabelMatcher, nil] istanza preconfigurata. Se nil,
+    #   ne crea una con i default. Personalizzala per tarare tolleranze.
+    # @param x_tolerance, y_tolerance [Float] tolleranze per il word
+    #   extractor (sia su data che su template).
+    #
+    # @return [Array<Hash>] uno per valore, formato:
+    #   ```
+    #   {
+    #     value: "499,81",
+    #     labels: {
+    #       col: "importi a debito versati",   # label SOPRA, stessa colonna
+    #       row: "TOTALE A"                     # label A SINISTRA, stessa riga
+    #     },
+    #     geometry: { x0:, x1:, top:, bottom: }
+    #   }
+    #   ```
+    #
+    # Esempio F24:
+    #   page.label_value_pairs(data_font: "Courier",
+    #                          template_font: /^Futura/,
+    #                          data_filter: ->(t) { t.match?(/^[\d.,]+$/) })
+    #   # => [{ value: "499,81",
+    #   #       labels: { col: "importi a debito versati", row: nil }, ...},
+    #   #     { value: "1.615,90",
+    #   #       labels: { col: "SALDO (M-N) +/–", row: "EURO +" }, ...}]
+    def label_value_pairs(data_font:, template_font: nil,
+                          data_filter: nil, matcher: nil,
+                          x_tolerance: 3.0, y_tolerance: 3.0)
+      data_chars = chars_where(font: data_font)
+      anchor_chars =
+        if template_font
+          chars_where(font: template_font)
+        else
+          # Default: tutto ciò che NON è data_font
+          chars.reject { |c| c[:generated] }.reject do |c|
+            send(:font_matches?, c[:font], data_font)
+          end
+        end
+
+      we = Util::WordExtractor.new(x_tolerance: x_tolerance, y_tolerance: y_tolerance)
+      data_words = we.extract_words(data_chars)
+      data_words = data_words.select { |w| data_filter.call(w[:text]) } if data_filter
+      anchor_words = we.extract_words(anchor_chars)
+
+      m = matcher || Util::LabelMatcher.new
+      m.match(data_words, anchor_words)
     end
 
     # ===== Words =====

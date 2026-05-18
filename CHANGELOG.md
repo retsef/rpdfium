@@ -3,6 +3,140 @@
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+# Changelog
+
+Tutte le modifiche notevoli a questo progetto.
+Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
+
+## [0.3.15] - associazione label-valore su moduli compilati
+
+### Aggiunto: `Page#label_value_pairs` e `Util::LabelMatcher`
+
+Su PDF di "moduli compilati" (F24, comunicazioni IVA, modelli 770,
+dichiarazioni dei redditi) le 3 API introdotte nella 0.3.14
+(`font_inventory`, `chars_where`, `lines`) permettono di **separare**
+il layer template dai dati. La 0.3.15 va oltre: **associa
+semanticamente** ogni valore inserito alla sua etichetta nel template,
+così l'utente non deve sapere a priori la geometria del modulo.
+
+### Come funziona
+
+L'algoritmo opera in tre step:
+
+1. **Cluster del template in label coerenti** — parole del modello
+   geometricamente vicine (stessa riga adiacenti, o righe successive
+   sovrapposte in x) vengono unite in un'unica label. Esempio:
+   "importi", "a", "debito", "versati" → label unica `"importi a
+   debito versati"`.
+
+2. **Per ogni valore inserito, cerca due tipi di label**:
+   - `col` — label SOPRA nella stessa colonna (x sovrapposto col
+     valore, bottom < value top, scelta la più vicina verticalmente).
+     Ruolo tipico: nome del campo/colonna.
+   - `row` — label A SINISTRA nella stessa riga (y sovrapposto, x1 <
+     value x0, scelta la più vicina orizzontalmente). Ruolo tipico:
+     identificatore di riga ("TOTALE A", "SALDO").
+
+3. **Ritorna** una mappatura `{ value:, labels: { col:, row: }, geometry: }`
+   per ogni valore.
+
+### Esempio: F24
+
+```ruby
+Rpdfium.open("f24.pdf") do |doc|
+  page = doc.page(0)
+  pairs = page.label_value_pairs(
+    data_font: "Courier",
+    template_font: /^Futura/,
+    data_filter: ->(t) { t.match?(/^[\d.,]+$/) }
+  )
+  pairs.each do |p|
+    puts "#{p[:value]} → col: #{p[:labels][:col]}, row: #{p[:labels][:row]}"
+  end
+end
+```
+
+Output:
+
+```
+499,81    → col: "importi a debito versati"
+0,00      → col: "importi a credito compensati"
+1001      → col: "codice tributo"
+2021      → col: "anno di riferimento"
+532,27    → col: "importi a debito versati", row: "A"     (TOTALE A)
+236,38    → col: "SALDO (A-B) +/–",          row: "B"
+1.253,00  → col: "importi a debito versati"               (sezione INPS)
+1.341,00  → col: "SALDO (C-D) +/–",          row: "D"
+1.615,90  → col: "SALDO (M-N) +/–",          row: "EURO +"   (saldo finale)
+```
+
+### Esempio: Modello 770 Quadro ST
+
+```ruby
+Rpdfium.open("770.pdf") do |doc|
+  doc.page(3).label_value_pairs(
+    data_font: "Courier",
+    data_filter: ->(t) { t.match?(/^[\d.,]+$/) }
+  )
+end
+# 394,13 → col: "Ritenute operate"
+# 394,13 → col: "Importo versato"
+# 1001   → col: "Codice tributo"
+# 16     → col: "Data di versamento giorno mese anno"
+```
+
+### `Util::LabelMatcher` come classe autonoma
+
+Per casi avanzati (es. matching su un sottoinsieme di pagina, con
+soglie tarate, o riusato su più pagine) la logica è esposta come
+classe separata:
+
+```ruby
+matcher = Rpdfium::Util::LabelMatcher.new(
+  col_max_dy: 50.0,           # max distanza label sopra -> valore
+  row_max_dx: 150.0,          # max distanza label sinistra -> valore
+  col_x_tolerance: 5.0,       # overlap x richiesto per label "sopra"
+  row_y_tolerance: 1.0,       # overlap y richiesto per label "sinistra"
+  cluster_same_row_dy: 4.0,   # tolleranza cluster word stessa riga
+  cluster_same_row_dx: 12.0,
+  cluster_adj_row_dy: 4.0     # tolleranza cluster word righe adiacenti
+)
+
+data_words = Rpdfium::Util::WordExtractor.new.extract_words(page.chars_where(font: "Courier"))
+anchor_words = Rpdfium::Util::WordExtractor.new.extract_words(page.chars_where(font: /^Futura/))
+
+pairs = matcher.match(data_words, anchor_words)
+
+# Bonus: ispeziona quali label il matcher costruisce
+labels = matcher.cluster_anchors(anchor_words)
+```
+
+### Limitazioni note
+
+- **Caselline separate per cifre**: su moduli con campi tipo codice
+  fiscale o numeri italiani spezzati su caselle separate
+  (`0 2 0 9 8 1 2 0 6 8 2`, `15.357 , 7 8`) il word extractor non
+  unisce le cifre. Aumentare `x_tolerance` aiuta, ma è tradeoff: il
+  fix definitivo richiede post-elaborazione consumer-side.
+- **Label troppo larghe**: a volte il cluster unisce label adiacenti
+  che sarebbero meglio distinte. Le soglie default funzionano sulla
+  maggior parte dei moduli italiani Agenzia delle Entrate/INPS; per
+  layout diversi tara i parametri di `LabelMatcher`.
+- **Label "abbondanti"**: per valori molto vicini al margine, le label
+  trovate sono ovvie ma poco informative. Filtrare i pair per
+  `data_filter` selettivo aiuta (esempio: solo numeri con virgola).
+
+### Non-regressione
+
+✅ busta_paga.pdf, cu.pdf p1, cu.pdf p199, sample, complex — tutti
+i test invariati.
+
+### API compatibility
+
+Nessuna breaking change. Le API 0.3.14 (`font_inventory`,
+`chars_where`, `lines`) restano invariate. `Util::LabelMatcher` è
+una nuova classe additiva.
+
 ## [0.3.14] - estrazione form-aware tramite font filtering
 
 ### Aggiunto: `Page#font_inventory`, `Page#chars_where`, `Page#lines`
@@ -32,7 +166,7 @@ page.font_inventory.first(5).each do |g|
   puts "#{g[:font].ljust(20)} h=#{g[:height]} w=#{g[:weight]} | #{g[:count]} char | #{g[:sample][0,40]}"
 end
 # Futura-Light          h=8.3   w=225  |   946 char | "cognome, denominazione o ragione sociale"
-# Courier               h=10.5  w=0    |   365 char | "000000000000Azienda S.R.L.P"
+# Courier               h=10.5  w=0    |   365 char | "01234567890Azienda S.R.L.P"
 # Futura-Bold           h=10.4  w=868  |   249 char | "CODICE FISCALEDATI ANAGRAFICIDOMICILIO F"
 # Futura-Light          h=8.9   w=225  |   194 char | "PROV.CODICE BANCA/POSTE/AGENTE DELLA RIS"
 # Futura-Bold           h=11.7  w=868  |   169 char | "CONTRIBUENTESEZIONE ERARIOSEZIONE INPSSE"
@@ -73,13 +207,15 @@ Rpdfium.open("f24.pdf") do |doc|
   doc.page(0).lines(font: "Courier")
 end
 # => [
-#   "Soggetto:  Azienda S.R.L.",
-#   "Azienda S.R.L.",
+#   "Soggetto:  Azienda  S.R.L.  ( 01234567890 )",
+#   "0  1  2  3  4  5  6  7  8  9  0",
+#   "Azienda  S.R.L.",
+#   "CITTA  XX  VIA  ESEMPIO  1",
 #   "1001  11  2021  499,81  0,00",
 #   "1712  12  2021  32,46  0,00",
 #   "1701  11  2021  0,00  295,89",
 #   "532,27  295,89  236,38",
-#   "1900  DM10  1903071322  11  2021  1.253,00  0,00",
+#   "1900  DM10  9999999999  11  2021  1.253,00  0,00",
 #   ...
 #   "1.615,90"
 # ]
@@ -96,7 +232,8 @@ Funziona ugualmente bene su:
 ### Tradeoff e limitazioni
 
 `Page#lines` ritorna righe **leggibili**, non già strutturate. Su
-moduli con caselle separate per cifra (es. il codice fiscale o numeri italiani con casella decimali separata
+moduli con caselle separate per cifra (es. il codice fiscale `0 2 0 9
+8 1 2 0 6 8 2`, o numeri italiani con casella decimali separata
 `15.357,78` → `15.357 7 8`), i gap visivi tra caselline superano
 `x_tolerance` di default e le righe risultano "spaziate". Soluzioni:
 
