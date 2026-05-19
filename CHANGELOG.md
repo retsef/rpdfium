@@ -13,6 +13,108 @@ Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+# Changelog
+
+Tutte le modifiche notevoli a questo progetto.
+Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
+
+## [0.3.17] - precisione label-value su moduli a colonne strette
+
+### Fixato: valori "wide" attraversano label sbagliate
+
+Su moduli prestampati con colonne template strette adiacenti (caso
+classico: 770 pagina 2 con "Cognome o Denominazione" / "Nome" /
+"Dichiarazione integrativa" / "Protocollo dichiarazione inviata"
+disposte sulla stessa riga), un valore che semanticamente appartiene
+al primo campo ma che si estende graficamente oltre il suo box
+(es. "Azienda S.R.L." scritto su tutta la riga) veniva spezzato in
+3 entry sotto label diverse.
+
+`Page#label_value_pairs(merge_adjacent: :smart, ...)` ora:
+
+1. **Tight-merge passo finale**: dopo i passaggi by_label e
+   by_proximity esistenti, un terzo passo unisce le word con gap
+   orizzontale ≤ 10pt e stessa riga esatta (top differiscono di <1pt)
+   anche se cadono sotto label di colonna diverse. La soglia è
+   inferiore al gap inter-colonna tipico (>15pt) ma maggiore del
+   kerning intra-word (<5pt), così si riconoscono solo stringhe
+   "naturalmente unite".
+
+2. **Label per wide values usa left-edge**: il `LabelMatcher` ora,
+   per valori più larghi di 60pt (tipico di stringhe merged), cerca
+   la label di colonna usando il **left edge** del valore (con piccolo
+   offset di 5pt) invece del midpoint. Così una denominazione che
+   inizia sotto "Cognome o Denominazione" mantiene quella label anche
+   se si estende oltre.
+
+Risultato sul 770 pagina 2:
+
+```ruby
+# Prima (0.3.16):
+{
+  "Cognome o Denominazione" => "Azienda",         # spezzata
+  "Dichiarazione integrativa" => "CONSULTING",       # sbagliata
+  "Protocollo dichiarazione inviata" => "S.R.L."     # sbagliata
+}
+
+# Adesso (0.3.17):
+{
+  "Cognome o Denominazione" => "Azienda S.R.L."  # ✓
+}
+```
+
+I tre passaggi sono configurabili separatamente:
+- `merge_x_gap:` (default 20.0) — gap by_label e by_proximity
+- `merge_tight_x_gap:` (default 10.0) — gap del tight-merge
+
+### Fixato: marcatori grafici di colonna catturati come label
+
+Su Quadro ST/SV del 770, il template stampa numerini "11", "14", "15",
+"16" come marcatori grafici delle colonne (indici delle posizioni nel
+form). Venivano catturati come label semantiche del LabelMatcher,
+producendo entry inutili come `"16" => ["443,73", "405,96", ...]`.
+
+`Util::LabelMatcher` ora ignora di default le label che matchano
+`/\A\d{1,3}\z|\A[IVX]{1,5}\z/` — numeri brevi e numeri romani brevi,
+tipici marcatori di colonna. Configurabile via
+`LabelMatcher.new(ignore_label_pattern: ...)`. Passa `nil` per
+disattivare il filtro, o una propria Regexp per pattern custom.
+
+Default:
+
+```ruby
+matcher = Rpdfium::Util::LabelMatcher.new
+# ignore_label_pattern: /\A\d{1,3}\z|\A[IVX]{1,5}\z/
+
+matcher = Rpdfium::Util::LabelMatcher.new(ignore_label_pattern: nil)
+# nessun filtro, comportamento 0.3.16
+
+matcher = Rpdfium::Util::LabelMatcher.new(ignore_label_pattern: /\AXX\z/)
+# filtro custom
+```
+
+### Risultato finale sul 770
+
+Confronto pagine principali prima/dopo:
+
+| Pagina | Prima (0.3.16) | Adesso (0.3.17) |
+| --- | --- | --- |
+| 2 | "Cognome": "Azienda" + 2 entry sbagliate | "Cognome o Denominazione": "Azienda S.R.L." |
+| 4 (Quadro ST) | "16": [443,73, 405,96, ...] (marcatore) | "Sospensione COVID Importo sospeso": [...] (label vera) |
+| 4 | "14": [16, 16, 17, ...] (marcatore) | "Data di versamento giorno mese anno": [16 02 2021, ...] |
+| 4 | "11": [1001, 443,73, ...] (marcatore) | "Codice tributo": [1001, ...] (label vera) |
+
+### Non-regressione
+
+✅ 16/16 test passano (busta_paga, F24, cu.pdf rotation 90°, cu.pdf
+small font, sample, complex, e tutti i nuovi assert su 770).
+
+### API compatibility
+
+Nessuna breaking change. I parametri nuovi (`merge_tight_x_gap`,
+`ignore_label_pattern`) hanno default sensati. Disattivare il filtro
+con `ignore_label_pattern: nil` ripristina il comportamento 0.3.16.
+
 ## [0.3.16] - estrazione strutturata su moduli multi-pagina
 
 ### Aggiunto: `label_value_pairs(merge_adjacent:, as_hash:)`

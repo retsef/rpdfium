@@ -760,7 +760,6 @@ module Rpdfium
     #   # => ["Soggetto:  Azienda  S.R.L.  ( 01234567890 )",
     #   #     "0  1  2  3  4  5  6  7  8  9  0",
     #   #     "Azienda  S.R.L.",
-    #   #     "CITTA  XX  VIA  ESEMPIO
     #   #     "1001  11  2021  499,81  0,00",
     #   #     "1712  12  2021  32,46  0,00",
     #   #     "1701  11  2021  0,00  295,89",
@@ -836,6 +835,7 @@ module Rpdfium
     def label_value_pairs(data_font:, template_font: nil,
                           data_filter: nil, matcher: nil,
                           merge_adjacent: false, merge_x_gap: 20.0,
+                          merge_tight_x_gap: 10.0,
                           as_hash: false,
                           x_tolerance: 3.0, y_tolerance: 3.0)
       data_chars = chars_where(font: data_font)
@@ -876,6 +876,17 @@ module Rpdfium
         data_words = merge_adjacent_unlabeled(data_words, prelim2,
                                                x_gap: merge_x_gap,
                                                y_tol: y_tolerance)
+        # 3° pass: "tight merge" — word con gap ORIZZONTALE molto stretto
+        # (default 10pt) su stessa riga esatta vengono unite anche se hanno
+        # label diverse. Caso classico: denominazione "AAA BBB CCC" che
+        # geometricamente cade sotto colonne template diverse (es. su
+        # 770 "Cognome o Denominazione" / "Dichiarazione integrativa" /
+        # "Protocollo dichiarazione inviata"). 10pt è inferiore al gap
+        # tipico inter-colonna del template prestampato (>15pt) ma più
+        # ampio del kerning intra-word (<5pt).
+        data_words = merge_adjacent_words_tight(data_words,
+                                                 x_gap: merge_tight_x_gap,
+                                                 y_tol: 0.5)
       end
 
       pairs = m.match(data_words, anchor_words)
@@ -955,6 +966,38 @@ module Rpdfium
         adjacent = w[:x0] - prev[:x1] <= x_gap && w[:x0] >= prev[:x0]
         both_unlabeled = unlabeled.call(prev) && unlabeled.call(w)
         if on_same_row && adjacent && both_unlabeled
+          current << w
+        else
+          groups << current
+          current = [w]
+        end
+      end
+      groups << current
+
+      groups.map { |g| merge_word_group(g) }
+    end
+
+    # Tight merge: word con gap ORIZZONTALE molto stretto (~10pt) su
+    # stessa riga esatta (top differiscono di < 1pt) vengono unite a
+    # prescindere dalle label. Riconosce stringhe singole come "Nome
+    # Cognome" o "AAA BBB CCC" che geometricamente cadono sotto colonne
+    # template diverse.
+    #
+    # La soglia y_tol = 0.5 è molto stretta perché vogliamo SOLO la
+    # stessa riga visiva, non righe adiacenti. La soglia x_gap = 10pt
+    # è inferiore al gap inter-colonna (>15pt) di un modulo prestampato
+    # tipico.
+    def merge_adjacent_words_tight(words, x_gap:, y_tol:)
+      return [] if words.empty?
+
+      sorted = words.sort_by { |w| [w[:top].round(1), w[:x0]] }
+      groups = []
+      current = [sorted.first]
+      sorted.drop(1).each do |w|
+        prev = current.last
+        on_same_row = (w[:top] - prev[:top]).abs <= y_tol
+        very_close = w[:x0] - prev[:x1] <= x_gap && w[:x0] >= prev[:x0]
+        if on_same_row && very_close
           current << w
         else
           groups << current

@@ -46,13 +46,19 @@ module Rpdfium
       # Cluster anchor: righe adiacenti con x sovrapposto
       DEFAULT_CLUSTER_ADJ_ROW_DY = 4.0
 
+      # Pattern di label da ignorare: numeri brevi (marcatori di colonna
+      # del template, es. "11", "14", "15", "16" su 770 Quadro ST) e
+      # numeri romani brevi. Sono indicatori grafici, non label semantiche.
+      DEFAULT_IGNORE_LABEL_PATTERN = /\A\d{1,3}\z|\A[IVX]{1,5}\z/.freeze
+
       def initialize(col_max_dy: DEFAULT_COL_MAX_DY,
                      row_max_dx: DEFAULT_ROW_MAX_DX,
                      col_x_tolerance: DEFAULT_COL_X_TOLERANCE,
                      row_y_tolerance: DEFAULT_ROW_Y_TOLERANCE,
                      cluster_same_row_dy: DEFAULT_CLUSTER_SAME_ROW_DY,
                      cluster_same_row_dx: DEFAULT_CLUSTER_SAME_ROW_DX,
-                     cluster_adj_row_dy: DEFAULT_CLUSTER_ADJ_ROW_DY)
+                     cluster_adj_row_dy: DEFAULT_CLUSTER_ADJ_ROW_DY,
+                     ignore_label_pattern: DEFAULT_IGNORE_LABEL_PATTERN)
         @col_max_dy = col_max_dy
         @row_max_dx = row_max_dx
         @col_x_tolerance = col_x_tolerance
@@ -60,6 +66,7 @@ module Rpdfium
         @cluster_same_row_dy = cluster_same_row_dy
         @cluster_same_row_dx = cluster_same_row_dx
         @cluster_adj_row_dy = cluster_adj_row_dy
+        @ignore_label_pattern = ignore_label_pattern
       end
 
       # Calcola le associazioni label → valore.
@@ -130,7 +137,13 @@ module Rpdfium
           end
           groups << group
         end
-        groups.map { |g| group_to_label(g) }
+        labels = groups.map { |g| group_to_label(g) }
+        # Filtra label che sono solo marcatori grafici (numeri brevi del
+        # template, es. i "11", "14", "16" del Quadro ST 770).
+        if @ignore_label_pattern
+          labels = labels.reject { |l| l[:text].match?(@ignore_label_pattern) }
+        end
+        labels
       end
 
       private
@@ -147,10 +160,24 @@ module Rpdfium
       end
 
       def find_col_label(value, labels)
-        vx = (value[:x0] + value[:x1]) / 2.0
+        # Per word "normali" usa il midpoint del valore.
+        # Per word "wide" (più larghe della maggior parte delle label,
+        # tipicamente perché frutto di merge tight di una stringa che
+        # attraversa più colonne template) usa invece il left edge:
+        # la label semanticamente corretta è quella sotto cui INIZIA il
+        # valore, non quella sotto cui sta il suo centro.
+        value_width = value[:x1] - value[:x0]
+        anchor_point =
+          if value_width > 60.0
+            # Wide: usa left edge con piccolo offset per evitare border cases
+            value[:x0] + 5.0
+          else
+            (value[:x0] + value[:x1]) / 2.0
+          end
+
         labels.select do |l|
-          l[:x0] - @col_x_tolerance <= vx &&
-            l[:x1] + @col_x_tolerance >= vx &&
+          l[:x0] - @col_x_tolerance <= anchor_point &&
+            l[:x1] + @col_x_tolerance >= anchor_point &&
             l[:bottom] < value[:top] &&
             (value[:top] - l[:bottom]) <= @col_max_dy
         end.min_by { |l| value[:top] - l[:bottom] }
