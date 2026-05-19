@@ -757,9 +757,9 @@ module Rpdfium
     # Esempio F24:
     #
     #   page.lines(font: /Courier/i)
-    #   # => ["Soggetto:  Azienda  S.R.L.  ( 01234567890 )",
-    #   #     "0  1  2  3  4  5  6  7  8  9  0",
-    #   #     "Azienda  S.R.L.",
+    #   # => ["Soggetto:  MANAGEMENT  CONSULTING  S.R.L.  ( 02098120682 )",
+    #   #     "0  2  0  9  8  1  2  0  6  8  2",
+    #   #     "MANAGEMENT  CONSULTING  S.R.L.",
     #   #     "1001  11  2021  499,81  0,00",
     #   #     "1712  12  2021  32,46  0,00",
     #   #     "1701  11  2021  0,00  295,89",

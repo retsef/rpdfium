@@ -18,6 +18,135 @@ Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+# Changelog
+
+Tutte le modifiche notevoli a questo progetto.
+Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
+
+## [0.3.18] - propagazione intestazioni su tabelle ripetitive
+
+### Fixato: intestazioni di colonna non propagate alle righe successive
+
+Su moduli con **tabelle ripetitive** (Quadro ST/SV del 770, sezioni
+Erario/INPS/Regioni di F24 multi-riga, ecc.) le intestazioni di
+colonna sono stampate **una sola volta** in cima alla tabella e
+sottintese per tutte le righe successive (ST2, ST3, ..., ST13).
+
+Nelle versioni precedenti `label_value_pairs` limitava il matching
+label→valore a `col_max_dy=80pt`: bastava per la prima riga (ST2) ma
+le righe successive (oltre 80pt dall'header) finivano sotto label
+sbagliate o spurie (es. `ST5: [04 2021, 455,46]` invece di
+`Periodo di riferimento: 04 2021` + `Importo versato: 455,46`).
+
+### Soluzione: pass di riassegnazione per colonne
+
+Il `LabelMatcher` ora ha una terza fase **`reassign_by_columns`**:
+
+1. **Identifica le colonne dati**: clustera i valori per coordinata
+   `x0` (left-aligned, es. codici tributo) **e** `x1` (right-aligned,
+   es. importi numerici "1.227,70" e "499,81" hanno x0 diversi ma x1
+   uguale). I valori sui moduli prestampati sono spesso allineati a
+   destra; servono entrambi gli allineamenti per coprire tutti i casi.
+
+2. **Spezza colonne per gap verticali**: se due valori consecutivi
+   nello stesso x-cluster hanno un gap verticale > 3× la mediana dei
+   gap (o > 40pt), li separa in colonne distinte. Risolve casi tipo
+   "codice fiscale in alto pagina + tabella sotto" che condividono
+   la stessa x ma sono sezioni distinte.
+
+3. **Filtra per densità**: una colonna "vera" di tabella ripetitiva
+   ha valori regolarmente equispaziati. Misura il coefficiente di
+   variazione dei gap (`CV = std_dev/mean`). Soglia stretta: `CV <
+   0.15` (spacing molto regolare). Esclude falsi positivi come i 5
+   saldi del F24 right-aligned (SALDO A-B, C-D, E-F, G-H, M-N: stessa
+   x1 ma sezioni diverse, CV = 0.26).
+
+4. **Trova l'header canonico**: per ogni colonna dati identificata,
+   cerca la label di template **subito sopra** il `col_top` (il top
+   del primo valore della colonna). Quella label è l'intestazione
+   canonica.
+
+5. **Propaga**: assegna l'header canonico a TUTTI i valori della
+   colonna, anche quelli oltre `col_max_dy` dall'header originale.
+
+### Risultato sul 770 Quadro ST
+
+Pagina 4 prima (0.3.17):
+
+```ruby
+{
+  "Periodo di riferimento mese anno" => "01 2021",
+  "Ritenute operate" => "394,13",   # solo ST2
+  "Importo versato" => "394,13",
+  "Codice tributo 11" => ["1001", "443,73", "1001", "405,96"],  # mescolato
+  "ST5" => ["04 2021", "455,46"],    # label spuria
+  "ST6" => ["05 2021", "407,40"],
+  "ST7" => ["06 2021", "1.227,70"],
+  # ...
+  "ST13" => ["12 2021", "32,46"]
+}
+```
+
+Adesso (0.3.18):
+
+```ruby
+{
+  "Periodo di riferimento mese anno" => [
+    "01 2021", "02 2021", "03 2021", "04 2021", "05 2021", "06 2021",
+    "07 2021", "08 2021", "09 2021", "10 2021", "11 2021", "12 2021"
+  ],
+  "Ritenute operate" => [
+    "394,13", "443,73", "405,96", "455,46", "407,40", "1.227,70",
+    "367,74", "520,00", "463,37", "451,32", "499,81", "32,46"
+  ],
+  "Importo versato" => [...stessi 12 importi...],
+  "Codice tributo 11" => ["1001", "1001", ..., "1001", "1712"],  # 12 codici
+  "Data di versamento giorno mese anno 14" => [
+    "16 02 2021", "16 03 2021", ..., "16 12 2021"
+  ]
+  # NO più label spurie ST5/ST7/ST13
+}
+```
+
+### Parametri configurabili
+
+`Rpdfium::Util::LabelMatcher.new` accetta tre nuovi parametri:
+
+- `repeat_headers:` (default `true`) — attiva/disattiva la
+  riassegnazione per colonne. Passa `false` per ripristinare il
+  comportamento 0.3.17.
+- `column_x_tolerance:` (default `3.0`) — tolleranza X per
+  considerare due valori "in stessa colonna".
+- `min_column_size:` (default `3`) — numero minimo di valori per
+  riconoscere una colonna come ripetitiva.
+
+```ruby
+matcher = Rpdfium::Util::LabelMatcher.new(
+  repeat_headers: true,
+  column_x_tolerance: 2.0,    # cluster più stretto
+  min_column_size: 5           # solo colonne con 5+ righe
+)
+page.label_value_pairs(data_font: "Courier", matcher: matcher, ...)
+```
+
+### Non-regressione
+
+✅ 15/15 test passano:
+- busta_paga, cu.pdf rotation 90°, sample, complex
+- F24 499,81 → "importi a debito versati"
+- F24 1.615,90 → "SALDO (M-N) +/–" (saldo finale, non confuso coi
+  saldi di sezione SALDO A-B / C-D)
+- F24 532,27 → "importi a debito versati" (TOTALE A)
+- 770 p2 "Cognome o Denominazione" → "Azienda S.R.L."
+- 770 p4 12 codici tributo + 12 importi + 12 date + 12 mesi
+- 770 p4 NO label spurie ST5/ST13
+- 770 p4 CODICE FISCALE → solo il singolo codice (non l'intera colonna)
+
+### API compatibility
+
+Nessuna breaking change. `repeat_headers: false` ripristina il
+comportamento 0.3.17 per chi preferisce.
+
 ## [0.3.17] - precisione label-value su moduli a colonne strette
 
 ### Fixato: valori "wide" attraversano label sbagliate

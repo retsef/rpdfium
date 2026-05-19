@@ -365,6 +365,38 @@ each value finds:
 For finer control over the clustering / matching thresholds, use
 `Rpdfium::Util::LabelMatcher` directly.
 
+#### Repeating-header tables
+
+Forms with **repeating tables** print column headers once at the top
+of the section, then sub-implicitly apply them to all rows below
+(770 Quadro ST/SV with rows ST2-ST13, F24 multi-row sections). By
+default, `LabelMatcher` propagates those headers to all values in
+the same column, regardless of vertical distance.
+
+The propagation uses geometric heuristics:
+- Identifies data columns by clustering values on `x0` (left-aligned)
+  AND `x1` (right-aligned, common for numeric values).
+- Splits columns at large vertical gaps (section breaks).
+- Filters by gap-regularity (coefficient of variation < 0.15) to
+  exclude false positives like right-aligned section subtotals on F24.
+- Finds the canonical column header above each identified column and
+  assigns it to all column values.
+
+Result on 770 Quadro ST page 4:
+
+```ruby
+{
+  "Codice tributo 11" => ["1001", "1001", ..., "1001", "1712"],  # 12 values
+  "Ritenute operate"  => ["394,13", "443,73", ..., "32,46"],     # 12 values
+  "Importo versato"   => [...same 12 values...],
+  "Data di versamento giorno mese anno 14" => [...12 dates...]
+  # no spurious ST5/ST6/.../ST13 row labels
+}
+```
+
+Pass `repeat_headers: false` to `LabelMatcher.new` to disable this
+behavior.
+
 #### Structured output and multi-word values
 
 By default `label_value_pairs` returns one entry per extracted word.
