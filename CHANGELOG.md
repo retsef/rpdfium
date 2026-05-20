@@ -3,25 +3,232 @@
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
-# Changelog
+## [0.4.0] - refactor verso primitive componibili
 
-Tutte le modifiche notevoli a questo progetto.
-Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
+### ⚠️ Breaking changes
 
-# Changelog
+`Page#label_value_pairs` torna a essere una **primitiva minimale**:
+ritorna `Array<Hash>` con pair grezzi senza opzioni di merging
+applicativo. Le opzioni `merge_adjacent:`, `as_hash:`, `boxed_layout:`
+sono **rimosse** (erano logica di dominio incollata sulla primitiva
+di estrazione).
 
-Tutte le modifiche notevoli a questo progetto.
-Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
+Per chi usava queste opzioni:
+- `merge_adjacent: :smart` → componi a mano con `Util::WordMerger`
+- `as_hash: true` → converti il risultato nel chiamante
+- `boxed_layout: true` → passa direttamente `x_tolerance: 15.0,
+  inject_spaces: false` + crea `LabelMatcher.new(row_max_dx: 400.0)`
 
-# Changelog
+Gli **adapter applicativi specifici** per moduli AE (Modello 770,
+Comunicazione IVA) sono ora forniti come **esempi esterni** in
+`examples/adapters/` (vedi sotto), non come parte della gem.
 
-Tutte le modifiche notevoli a questo progetto.
-Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
+### Aggiunto: `Util::WordMerger`
 
-# Changelog
+Primitiva di merging configurabile, con tre strategie esplicite:
 
-Tutte le modifiche notevoli a questo progetto.
-Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
+```ruby
+merger = Rpdfium::Util::WordMerger.new(x_gap: 20.0, y_tol: 3.0)
+
+# Fonde tutte le word adiacenti
+merger.merge_by_proximity(words)
+
+# Fonde solo word con stessa label (mapping word → label fornito dal chiamante)
+merger.merge_by_label(words, labels_by_word)
+
+# Fonde solo word con label nil (orfane)
+merger.merge_unlabeled(words, labels_by_word)
+```
+
+### Aggiunto: `Util::ColumnInference`
+
+Primitiva di inferenza di colonne dati su PDF non-tabellari (form
+prestampati, layout con valori allineati per posizione ma senza
+linee). Algoritmo in 3 passi:
+
+1. Cluster per coordinata X (x0 left-align O x1 right-align)
+2. Spezza per gap verticali anomali
+3. Filtra per densità (coefficiente di variazione dei gap)
+
+```ruby
+inference = Rpdfium::Util::ColumnInference.new(
+  x_tolerance: 3.0,     # tolleranza cluster X
+  min_size: 3,          # almeno 3 valori per colonna
+  cv_threshold: 0.15    # gap regolari
+)
+
+columns = inference.infer(words)
+# => [[word1, word2, ...], [word1, word2, ...]]
+```
+
+### `Util::LabelMatcher` ora compone con `ColumnInference`
+
+```ruby
+# Senza riassegnazione (comportamento 0.3.15)
+matcher = Rpdfium::Util::LabelMatcher.new
+
+# Con riassegnazione per colonne ripetitive (ex repeat_headers)
+matcher = Rpdfium::Util::LabelMatcher.new(
+  column_inference: Rpdfium::Util::ColumnInference.new
+)
+```
+
+Il flag `repeat_headers:` non esiste più — si passa direttamente un
+oggetto `ColumnInference` configurato (o `nil` per disabilitare).
+
+### Adapter applicativi (esempi esterni)
+
+Distribuiti in `examples/adapters/`, NON parte della gem. Mostrano
+come comporre le primitive per casi specifici:
+
+- **`Modello770Reader`** (per Dichiarazione sostituti d'imposta)
+- **`LiquidazioneIVAReader`** (per Comunicazione Liquidazioni IVA)
+
+Ognuno è uno script Ruby standalone con classe ~100 righe. Da
+copiare nel proprio progetto e adattare se serve.
+
+### Filosofia
+
+La gem rpdfium fornisce primitive generaliste per leggere PDF. La
+**logica applicativa specifica per un modulo** (sapere che il 770 ha
+Quadro ST/SV/SX, che l'IVA ha caselline a cifre singole con virgola
+graficamente dipinta) appartiene al **codice del consumatore**, non
+alla gem.
+
+Le primitive `WordMerger`, `ColumnInference`, `LabelMatcher` sono
+**componibili**: ogni caso d'uso compone una pipeline specifica.
+
+### Non-regressione
+
+✅ Tutti i test core passano. F24, busta_paga, cu.pdf, complex,
+sample invariati. Le primitive nuove sono testate con assert
+dedicati.
+
+### Migration guide da 0.3.19
+
+```ruby
+# Prima (0.3.19):
+page.label_value_pairs(
+  data_font: "Courier",
+  merge_adjacent: :smart,
+  as_hash: true
+)
+
+# Dopo (0.4.0): usa l'adapter Modello770Reader (vedi examples/) o
+# componi a mano:
+matcher = Rpdfium::Util::LabelMatcher.new(
+  column_inference: Rpdfium::Util::ColumnInference.new
+)
+pairs = page.label_value_pairs(data_font: "Courier", matcher: matcher)
+# poi merge custom + hash conversion nel tuo codice
+```
+
+## [0.3.19] - estrazione su moduli a caselline (boxed_layout)
+
+### Aggiunto: `label_value_pairs(boxed_layout: true)`
+
+Alcuni moduli prestampati italiani (Comunicazione Liquidazioni
+Periodiche IVA, Modello Redditi quadri specifici) hanno un layout a
+**caselline separate per ogni cifra**: la partita IVA `01234567890`
+viene stampata come 11 caselline, l'importo `15.357,78` viene scritto
+come `15.357 7 8` con la parte intera, la virgola dipinta dal template,
+e le 2 cifre decimali in caselle ciascuna a ~10pt di distanza.
+
+Il default `label_value_pairs` non riconosceva questi numeri come
+singoli valori: spezzava `15.357,78` in 3 word separate (`15.357`, `7`,
+`8`) perché PDFium inseriva automaticamente uno spazio "generato" tra
+le caselline (gap > 5pt → trattato come separatore di parole).
+
+### Soluzione: flag `boxed_layout: true`
+
+Configura automaticamente i parametri adatti:
+
+- **`inject_spaces: false`** sui char (no spazi PDFium-generated
+  che spezzano le caselline)
+- **`x_tolerance: 15.0`** (gap tipico tra caselline ~10-13pt)
+- **`row_max_dx: 400.0`** sul LabelMatcher (le label sui moduli VP
+  sono a sinistra e i valori in colonna DEBITI/CREDITI sono a 250+pt
+  di distanza)
+
+```ruby
+Rpdfium.open("iva.pdf") do |doc|
+  doc.page(1).label_value_pairs(
+    data_font: "Helvetica",
+    merge_adjacent: :smart,
+    as_hash: true,
+    boxed_layout: true        # ← nuova opzione
+  )
+end
+```
+
+### Risultato sul modulo IVA — Pagina 2 (Quadro VP)
+
+**Prima (0.3.18)**:
+
+```ruby
+{
+  "CODICE FISCALE" => "0 2 0 9",                # spezzato per le caselline
+  "Operazioni straordinarie" => "5.455 8",      # label sbagliata, numero spezzato
+  "," => ["2", "1"],                             # virgola del template come label
+  "IVA esigibile" => "3.378 7 2",               # spezzato
+  "CREDITI" => "1.132 7",                       # label è il sub-header, non semantica
+  ...
+}
+```
+
+**Adesso (0.3.19) con `boxed_layout: true`**:
+
+```ruby
+{
+  "CODICE FISCALE" => "01234567890",                              # ✓
+  "Mod. N." => "01",                                              # ✓
+  "PERIODO DI RIFERIMENTO" => "04",                               # mese aprile
+  "VP2 Totale operazioni attive (al netto dell'IVA)" => "15.35778",   # € 15.357,78
+  "VP3 Totale operazioni passive (al netto dell'IVA)" => "5.45582",   # € 5.455,82
+  "VP4 IVA esigibile" => "3.37872",                                   # € 3.378,72
+  "VP5 IVA detratta" => "1.13271",                                    # € 1.132,71
+  "VP6 IVA dovuta" => "2.24601",                                      # € 2.246,01
+  "VP14 IVA da versare" => "2.24601"                                  # € 2.246,01
+}
+```
+
+I valori numerici sono concatenati senza virgola decimale (la virgola
+è grafica nel template, non parte del data layer). Il consumatore può
+formatterla con post-processing: gli ultimi 2 caratteri sono i
+decimali, il resto è la parte intera.
+
+```ruby
+def parse_eur_amount(s)
+  s.match(/\A(.*)(\d{2})\z/) { |m| "#{m[1]},#{m[2]}" }
+end
+parse_eur_amount("15.35778")  # => "15.357,78"
+parse_eur_amount("2.24601")   # => "2.246,01"
+```
+
+### Quando usarlo
+
+Attiva `boxed_layout: true` quando il modulo presenta:
+- Codici fiscali / partite IVA con cifre in caselline visibili
+- Importi con virgola decimale grafica e caselle per ogni cifra
+- Date in formato GG MM AAAA con caselle separate
+- Generalmente: PDF Agenzia delle Entrate con sfondo a celle
+
+Lascia il default `false` per:
+- F24 stampato (Courier compatto senza caselle)
+- Modello 770 quadri ST/SV (testo libero compatto)
+- Buste paga / cedolini con tabelle standard
+- Tutti i casi dove i char sono già contigui
+
+### Non-regressione
+
+✅ 15/15 test passano. Il default `boxed_layout: false` mantiene il
+comportamento 0.3.18 byte-per-byte.
+
+### API compatibility
+
+Nessuna breaking change. Puoi passare `inject_spaces:`, `x_tolerance:`
+e altri kwargs separatamente per controllo fine, oppure usare la
+combinazione `boxed_layout: true` come scorciatoia.
 
 ## [0.3.18] - propagazione intestazioni su tabelle ripetitive
 

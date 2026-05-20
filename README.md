@@ -333,10 +333,10 @@ sits on a printed template as text.
 
 #### Label-value pairing
 
-`Page#label_value_pairs` goes one step further: it associates each
-extracted value with the semantic label from the template that
-describes it. Useful when you want machine-readable
-`field_name → field_value` pairs without hard-coding the form layout.
+`Page#label_value_pairs` associates each extracted value with the
+semantic label from the template that describes it. Useful when you
+want machine-readable `field_name → field_value` pairs without
+hard-coding the form layout.
 
 ```ruby
 Rpdfium.open("f24.pdf") do |doc|
@@ -352,91 +352,63 @@ Rpdfium.open("f24.pdf") do |doc|
   end
 end
 # 499,81    → col: "importi a debito versati"
-# 1001      → col: "codice tributo"
-# 532,27    → col: "importi a debito versati", row: "A"
 # 1.615,90  → col: "SALDO (M-N) +/–", row: "EURO +"   ← saldo finale
 ```
 
 The algorithm clusters template words into coherent labels, then for
-each value finds:
-- the `:col` label (positioned above, in the same column)
-- the `:row` label (positioned to the left, on the same row)
+each value finds the `:col` label (positioned above) and the `:row`
+label (positioned to the left).
 
-For finer control over the clustering / matching thresholds, use
-`Rpdfium::Util::LabelMatcher` directly.
+#### Composable primitives for complex forms
 
-#### Repeating-header tables
+For complex forms with repeating tables, boxed-layout cells, or
+multi-word values, compose three primitives:
 
-Forms with **repeating tables** print column headers once at the top
-of the section, then sub-implicitly apply them to all rows below
-(770 Quadro ST/SV with rows ST2-ST13, F24 multi-row sections). By
-default, `LabelMatcher` propagates those headers to all values in
-the same column, regardless of vertical distance.
-
-The propagation uses geometric heuristics:
-- Identifies data columns by clustering values on `x0` (left-aligned)
-  AND `x1` (right-aligned, common for numeric values).
-- Splits columns at large vertical gaps (section breaks).
-- Filters by gap-regularity (coefficient of variation < 0.15) to
-  exclude false positives like right-aligned section subtotals on F24.
-- Finds the canonical column header above each identified column and
-  assigns it to all column values.
-
-Result on 770 Quadro ST page 4:
+**`Util::WordMerger`** — join adjacent words on the same line:
 
 ```ruby
-{
-  "Codice tributo 11" => ["1001", "1001", ..., "1001", "1712"],  # 12 values
-  "Ritenute operate"  => ["394,13", "443,73", ..., "32,46"],     # 12 values
-  "Importo versato"   => [...same 12 values...],
-  "Data di versamento giorno mese anno 14" => [...12 dates...]
-  # no spurious ST5/ST6/.../ST13 row labels
-}
+merger = Rpdfium::Util::WordMerger.new(x_gap: 20.0, y_tol: 3.0)
+merged = merger.merge_by_proximity(words)
+# or, with labels mapping to preserve checkbox grids:
+merged = merger.merge_by_label(words, label_per_word)
+# or, only merge orphans (no label assigned):
+merged = merger.merge_unlabeled(words, label_per_word)
 ```
 
-Pass `repeat_headers: false` to `LabelMatcher.new` to disable this
-behavior.
-
-#### Structured output and multi-word values
-
-By default `label_value_pairs` returns one entry per extracted word.
-On forms with header lines (e.g. "Soggetto: AAA BBB CCC ( 12345 )")
-or multi-page declarations, that's noisy. Two extra options shape
-the output to be **consumer-ready**:
-
-- `merge_adjacent:` — strategy for joining adjacent words on the
-  same line:
-  - `false` (default) — no merging
-  - `:by_label` — merge only if same column label (preserves checkbox
-    grids like 770 quadri compilati ST/SV/SX)
-  - `:by_proximity` — always merge adjacent words on the same line
-  - `:smart` — by_label for labelled words, by_proximity for orphans
-    (recommended for complex multi-section forms)
-- `as_hash: true` — return `Hash{label => value}` instead of
-  `Array<Hash>`. Duplicate labels become arrays.
+**`Util::ColumnInference`** — identify data columns by alignment:
 
 ```ruby
-Rpdfium.open("770.pdf") do |doc|
-  doc.page(1).label_value_pairs(
-    data_font: "Courier",
-    merge_adjacent: :smart,
-    as_hash: true
-  )
-end
-# => {
-#   "Codice fiscale" => "01234567890",
-#   "Codice attività" => "999999",
-#   "Indirizzo di posta elettronica/PEC" => "AZIENDA@PEC.IT",
-#   "ST" => "X", "SV" => "X", "SX" => "X",  # checkbox preserved
-#   "Dipendente" => "X",
-#   "Tipologia invio" => "2",
-#   ...
-# }
+inference = Rpdfium::Util::ColumnInference.new(
+  x_tolerance: 3.0,
+  min_size: 3,
+  cv_threshold: 0.15
+)
+columns = inference.infer(words)
+# => [[word1, word2, ..., word12], ...]
 ```
 
-Words without an associated template label confluiscono sotto la chiave
-`"_unlabeled"` come array di stringhe. Utile per estrarre stamp /
-header / footer libero che non ha un campo di template di riferimento.
+Algorithm: cluster by `x0` (left-align) AND `x1` (right-align), split
+columns at large vertical gaps, filter by gap-regularity (coefficient
+of variation < 0.15) to exclude false positives.
+
+**`Util::LabelMatcher`** with column inference enables header
+propagation for repeating tables (e.g. 770 Quadro ST with rows
+ST2..ST13 sharing column headers printed once at the top):
+
+```ruby
+matcher = Rpdfium::Util::LabelMatcher.new(
+  column_inference: Rpdfium::Util::ColumnInference.new
+)
+pairs = page.label_value_pairs(data_font: "Courier", matcher: matcher)
+```
+
+For boxed-layout forms (cells separated by ~10pt with template
+graphics for decimals), pass `inject_spaces: false, x_tolerance: 15.0`
+to `label_value_pairs` and `row_max_dx: 400.0` to the matcher.
+
+See `examples/adapters/` for complete working adapters that compose
+these primitives for specific Italian tax forms (Modello 770,
+Comunicazione IVA).
 
 ### Struct tree (Tagged PDF)
 

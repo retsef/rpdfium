@@ -22,6 +22,8 @@ require_relative "rpdfium/page"
 require_relative "rpdfium/util/cluster"
 require_relative "rpdfium/util/word_extractor"
 require_relative "rpdfium/util/text_extraction"
+require_relative "rpdfium/util/word_merger"
+require_relative "rpdfium/util/column_inference"
 require_relative "rpdfium/util/label_matcher"
 
 require_relative "rpdfium/table/edges"

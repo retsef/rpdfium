@@ -3,27 +3,32 @@
 module Rpdfium
   module Util
     # Associa label semantiche a valori inseriti su PDF di moduli compilati
-    # (F24, comunicazioni IVA, modelli 770, dichiarazioni). Su questi PDF
-    # il modello prestampato e i dati coesistono come testo grafico:
-    # `Page#chars_where(font: ...)` separa i due layer, `LabelMatcher`
-    # associa ai valori la loro etichetta semantica nel template.
+    # (F24, comunicazioni IVA, modelli 770) dove template e dati coesistono
+    # come testo grafico in font diversi.
     #
-    # Strategia:
+    # Strategia base:
     #
     # 1. **Cluster** le parole del template in "label coerenti": word
-    #    geometricamente vicine (stessa riga adiacenti, o righe successive
-    #    in colonna) formano un'unica label semantica.
+    #    geometricamente vicine formano un'unica label.
     #
-    # 2. **Per ogni valore**, cerca due tipi di label:
-    #    - `:col` — label SOPRA in stessa colonna (più vicina verticalmente).
-    #    - `:row` — label A SINISTRA in stessa riga (più vicina orizzontalmente).
+    # 2. **Per ogni valore** cerca:
+    #    - `:col` — label SOPRA in stessa colonna
+    #    - `:row` — label A SINISTRA in stessa riga
     #
-    # 3. **Riassegnazione per tabelle ripetitive** (opt: `repeat_headers:`):
-    #    identifica colonne dati (≥3 valori con stessa x) e propaga
-    #    l'header canonico stampato in cima alla colonna a TUTTI i valori
-    #    della colonna, anche oltre `col_max_dy`. Risolve casi tipo 770
-    #    Quadro ST dove ST3, ST4, ..., ST13 ereditano le intestazioni
-    #    stampate solo sopra ST2.
+    # 3. (Opzionale) **Riassegnazione per colonne**: usa `ColumnInference`
+    #    per identificare colonne ripetitive (es. ST2..ST13 del 770 Quadro
+    #    ST) e propaga l'header canonico a tutti i valori della colonna,
+    #    superando il limite `col_max_dy`.
+    #
+    # @example uso base
+    #   matcher = Rpdfium::Util::LabelMatcher.new
+    #   matcher.match(value_words, anchor_words)
+    #
+    # @example con tabelle ripetitive (header in cima alla colonna)
+    #   matcher = Rpdfium::Util::LabelMatcher.new(
+    #     column_inference: Rpdfium::Util::ColumnInference.new
+    #   )
+    #   matcher.match(value_words, anchor_words)
     class LabelMatcher
       DEFAULT_COL_MAX_DY = 80.0
       DEFAULT_ROW_MAX_DX = 200.0
@@ -33,8 +38,7 @@ module Rpdfium
       DEFAULT_CLUSTER_SAME_ROW_DX = 12.0
       DEFAULT_CLUSTER_ADJ_ROW_DY = 4.0
       DEFAULT_IGNORE_LABEL_PATTERN = /\A\d{1,3}\z|\A[IVX]{1,5}\z/.freeze
-      DEFAULT_COLUMN_X_TOLERANCE = 3.0
-      DEFAULT_MIN_COLUMN_SIZE = 3
+      WIDE_VALUE_THRESHOLD = 60.0
 
       def initialize(col_max_dy: DEFAULT_COL_MAX_DY,
                      row_max_dx: DEFAULT_ROW_MAX_DX,
@@ -44,9 +48,7 @@ module Rpdfium
                      cluster_same_row_dx: DEFAULT_CLUSTER_SAME_ROW_DX,
                      cluster_adj_row_dy: DEFAULT_CLUSTER_ADJ_ROW_DY,
                      ignore_label_pattern: DEFAULT_IGNORE_LABEL_PATTERN,
-                     repeat_headers: true,
-                     column_x_tolerance: DEFAULT_COLUMN_X_TOLERANCE,
-                     min_column_size: DEFAULT_MIN_COLUMN_SIZE)
+                     column_inference: nil)
         @col_max_dy = col_max_dy
         @row_max_dx = row_max_dx
         @col_x_tolerance = col_x_tolerance
@@ -55,12 +57,14 @@ module Rpdfium
         @cluster_same_row_dx = cluster_same_row_dx
         @cluster_adj_row_dy = cluster_adj_row_dy
         @ignore_label_pattern = ignore_label_pattern
-        @repeat_headers = repeat_headers
-        @column_x_tolerance = column_x_tolerance
-        @min_column_size = min_column_size
+        @column_inference = column_inference
       end
 
       # Calcola le associazioni label → valore.
+      #
+      # @param values [Array<Hash>] word del layer "dati"
+      # @param anchors [Array<Hash>] word del layer "template"
+      # @return [Array<Hash>] uno per valore: { value:, labels: { col:, row: }, geometry: }
       def match(values, anchors)
         labels = cluster_anchors(anchors)
 
@@ -70,7 +74,8 @@ module Rpdfium
           { value: v, col: col, row: row }
         end
 
-        prelim = reassign_by_columns(prelim, labels, values) if @repeat_headers
+        # Riassegnazione opzionale per colonne ripetitive
+        prelim = reassign_by_columns(prelim, labels, values) if @column_inference
 
         prelim.map do |entry|
           v = entry[:value]
@@ -87,6 +92,8 @@ module Rpdfium
         end
       end
 
+      # Ricostruisce le label dal cluster delle word del template.
+      # Esposto pubblicamente per ispezione/debug.
       def cluster_anchors(anchor_words)
         remaining = anchor_words.dup
         groups = []
@@ -138,9 +145,13 @@ module Rpdfium
       end
 
       def find_col_label(value, labels)
+        # Per word "wide" (più larghe della maggior parte delle label,
+        # tipicamente perché frutto di merge di una stringa che attraversa
+        # più colonne template) usa il left edge: la label corretta è
+        # quella sotto cui INIZIA il valore.
         value_width = value[:x1] - value[:x0]
         anchor_point =
-          if value_width > 60.0
+          if value_width > WIDE_VALUE_THRESHOLD
             value[:x0] + 5.0
           else
             (value[:x0] + value[:x1]) / 2.0
@@ -166,21 +177,13 @@ module Rpdfium
 
       # Identifica colonne dati e propaga l'header canonico stampato in
       # cima alla colonna a TUTTI i valori della colonna.
+      # Usa @column_inference fornito al constructor.
       def reassign_by_columns(prelim, labels, values)
-        # Identifica colonne sia per allineamento a SINISTRA (x0) che a
-        # DESTRA (x1). I valori numerici nei moduli prestampati sono
-        # right-aligned: importi come "499,81" (x0=250) e "1.227,70"
-        # (x0=238) hanno x0 diversi ma x1 simile, sono nella stessa colonna.
-        col_groups_x0 = cluster_columns_by(values, :x0)
-        col_groups_x1 = cluster_columns_by(values, :x1)
+        columns = @column_inference.infer(values)
+        return prelim if columns.empty?
 
-        # Unisco le colonne assegnando ad ogni valore la "migliore" tra le
-        # due (quella con più valori, perché più probabile sia colonna vera)
-        all_columns = (col_groups_x0 + col_groups_x1)
-
-        # Costruisco column_headers preferendo le colonne più larghe
-        # (più valori = maggiore evidenza statistica)
-        sorted_columns = all_columns.sort_by { |c| -c.size }
+        # Ordina colonne più grandi prima (più evidenza statistica)
+        sorted_columns = columns.sort_by { |c| -c.size }
 
         column_headers = {}
         sorted_columns.each do |col_values|
@@ -196,8 +199,6 @@ module Rpdfium
           next unless header
 
           col_values.each do |v|
-            # Non sovrascrivere assegnazioni già fatte (rispetto priorità
-            # colonna più grande). Garantisce idempotenza.
             column_headers[v.object_id] ||= header
           end
         end
@@ -207,75 +208,6 @@ module Rpdfium
           new_col = column_headers[v.object_id]
           new_col ? entry.merge(col: new_col) : entry
         end
-      end
-
-      # Cluster di valori per coordinata (x0 = left-align, x1 = right-align).
-      # Spezza colonne con gap verticali grandi (interruzioni di sezione).
-      # Filtra colonne a bassa densità (probabilmente false colonne).
-      def cluster_columns_by(values, coord)
-        sorted = values.sort_by { |v| v[coord] }
-        x_groups = []
-        current = []
-        sorted.each do |v|
-          if current.empty? || (v[coord] - current.last[coord]).abs <= @column_x_tolerance
-            current << v
-          else
-            x_groups << current
-            current = [v]
-          end
-        end
-        x_groups << current
-
-        columns = []
-        x_groups.each do |group|
-          sorted_y = group.sort_by { |v| v[:top] }
-          gaps = sorted_y.each_cons(2).map { |a, b| b[:top] - a[:top] }
-          if gaps.empty?
-            columns << sorted_y if column_dense_enough?(sorted_y)
-            next
-          end
-          median_gap = gaps.sort[gaps.size / 2]
-          threshold = [median_gap * 3, 40.0].max
-
-          sub = [sorted_y.first]
-          sorted_y.each_cons(2) do |a, b|
-            gap = b[:top] - a[:top]
-            if gap > threshold
-              columns << sub if column_dense_enough?(sub)
-              sub = [b]
-            else
-              sub << b
-            end
-          end
-          columns << sub if column_dense_enough?(sub)
-        end
-        columns
-      end
-
-      # Una "colonna vera" di tabella ripetitiva ha alta densità: i valori
-      # sono regolarmente spaziati nel range verticale che coprono. Una
-      # falsa colonna (es. 5 saldi di sezioni diverse del F24 allineati a
-      # destra) ha bassa densità o spacing irregolare.
-      #
-      # Misura: la **deviazione standard** dei gap consecutivi deve essere
-      # piccola rispetto alla media (coefficiente di variazione < 0.5).
-      # Inoltre richiediamo min_column_size valori.
-      def column_dense_enough?(col_values)
-        return false if col_values.size < @min_column_size
-
-        sorted_y = col_values.sort_by { |v| v[:top] }
-        gaps = sorted_y.each_cons(2).map { |a, b| b[:top] - a[:top] }
-        return true if gaps.size < 2  # troppo pochi per stimare CV
-
-        mean = gaps.sum / gaps.size.to_f
-        variance = gaps.map { |g| (g - mean)**2 }.sum / gaps.size
-        std_dev = Math.sqrt(variance)
-        cv = mean.zero? ? Float::INFINITY : std_dev / mean
-
-        # CV bassa = spacing molto regolare = colonna vera ripetitiva.
-        # Soglia stretta per evitare falsi positivi: 0.15 accetta solo
-        # tabelle con righe quasi equispaziate.
-        cv < 0.15
       end
     end
   end
