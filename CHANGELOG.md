@@ -3,6 +3,16 @@
 Tutte le modifiche notevoli a questo progetto.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [0.4.1] - 2026-05-26
+
+### Corretto
+
+- **Caricamento su Linux con `rpdfium-binary`**: `rpdfium.rb` ora esegue
+  `require "rpdfium/binary"` prima di `raw.rb`. In precedenza `ffi_lib`
+  veniva chiamato prima che `Rpdfium::Binary` fosse definito, causando
+  un fallback ai nomi di sistema (`pdfium`, `libpdfium.so`) e un
+  `LoadError` su ambienti senza PDFium installato globalmente.
+
 ## [0.4.0] - refactor verso primitive componibili
 
 ### ⚠️ Breaking changes

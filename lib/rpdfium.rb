@@ -2,6 +2,16 @@
 
 require_relative "rpdfium/version"
 require_relative "rpdfium/errors"
+
+# Carica la gemma companion rpdfium-binary se presente: deve avvenire PRIMA
+# di raw.rb, che chiama ffi_lib al momento del require e interroga
+# Rpdfium::Binary.library_path per trovare il path assoluto al .so/.dylib.
+begin
+  require "rpdfium/binary"
+rescue LoadError
+  nil
+end
+
 require_relative "rpdfium/raw"
 
 require_relative "rpdfium/io/png"
