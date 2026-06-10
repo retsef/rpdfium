@@ -2,25 +2,25 @@
 
 module Rpdfium
   module Table
-    # Trova tabelle su una pagina, fedele al `pdfplumber.TableFinder`.
+    # Finds tables on a page, faithful to `pdfplumber.TableFinder`.
     #
     # Pipeline:
-    #   1. raccogli edges candidati per ogni asse, secondo strategia
+    #   1. collect candidate edges for each axis, according to strategy
     #      (`:lines` / `:lines_strict` / `:text` / `:explicit`)
-    #   2. merge_edges (snap collineari + join contigui)
-    #   3. filter per lunghezza minima
-    #   4. edges_to_intersections con tolerance
-    #   5. intersections_to_cells (smallest cell per ogni punto)
-    #   6. cells_to_tables (grouping per corner condivisi)
+    #   2. merge_edges (snap collinear + join contiguous)
+    #   3. filter by minimum length
+    #   4. edges_to_intersections with tolerance
+    #   5. intersections_to_cells (smallest cell for each point)
+    #   6. cells_to_tables (grouping by shared corners)
     #
-    # API pubblica:
+    # Public API:
     #   ext = Rpdfium::Table::Extractor.new(page, **opts)
-    #   ext.tables           # => [Table, ...]   (oggetti Rpdfium::Table::Table)
-    #   ext.extract          # => [[[String]]]   (Array di tabelle, ogni tabella
-    #                                              è Array di righe, ogni riga
-    #                                              è Array di stringhe)
-    #   ext.find             # alias di .tables (compat back con 0.2.x)
-    #   ext.edges            # edges raffinati
+    #   ext.tables           # => [Table, ...]   (Rpdfium::Table::Table objects)
+    #   ext.extract          # => [[[String]]]   (Array of tables, each table
+    #                                              is an Array of rows, each row
+    #                                              is an Array of strings)
+    #   ext.find             # alias of .tables (back-compat with 0.2.x)
+    #   ext.edges            # refined edges
     #   ext.intersections    # Hash {[x,y] => {v:[],h:[]}}
     #   ext.cells            # Array<bbox>
     class Extractor
@@ -30,7 +30,7 @@ module Rpdfium
         explicit_vertical_lines:   [],
         explicit_horizontal_lines: [],
 
-        # Tolleranze. I `_x_` / `_y_` ereditano dal valore non-suffisso.
+        # Tolerances. The `_x_` / `_y_` inherit from the un-suffixed value.
         snap_tolerance:           3.0,
         snap_x_tolerance:         nil,
         snap_y_tolerance:         nil,
@@ -48,16 +48,17 @@ module Rpdfium
         intersection_x_tolerance: nil,
         intersection_y_tolerance: nil,
 
-        # Settings testo (passati a TextExtraction quando si chiama .extract).
-        # I default 3.0 sono quelli di pdfplumber.
+        # Text settings (passed to TextExtraction when .extract is called).
+        # The 3.0 defaults are those of pdfplumber.
         text_x_tolerance: Util::WordExtractor::DEFAULT_X_TOLERANCE,
         text_y_tolerance: Util::WordExtractor::DEFAULT_Y_TOLERANCE,
         text_keep_blank_chars: false,
 
-        # Auto-fallback: se :lines non produce edges, riprova con :text.
-        # Manteniamo il flag (era già in 0.2.x) ma SOLO come fallback,
-        # mai come "fix" su layout patologici — coerente con pdfplumber che
-        # non lo ha (chi usa pdfplumber sa che deve scegliere la strategia).
+        # Auto-fallback: if :lines produces no edges, retry with :text.
+        # We keep the flag (it was already in 0.2.x) but ONLY as a fallback,
+        # never as a "fix" for pathological layouts — consistent with
+        # pdfplumber, which does not have it (pdfplumber users know they
+        # must choose the strategy).
         auto_fallback: true
       }.freeze
 
@@ -71,14 +72,14 @@ module Rpdfium
         validate_strategies!
       end
 
-      # Pipeline completa, costruisce gli edges raffinati.
+      # Full pipeline, builds the refined edges.
       def edges
         @edges ||= build_edges(@settings[:vertical_strategy],
                                @settings[:horizontal_strategy]).then do |built|
           if built.empty? && @settings[:auto_fallback] &&
              (@settings[:vertical_strategy] != :text ||
               @settings[:horizontal_strategy] != :text)
-            # Fallback: l'auto-fallback è LASCO, riprova tutto a :text.
+            # Fallback: the auto-fallback is LOOSE, retry everything as :text.
             build_edges(:text, :text)
           else
             built
@@ -103,7 +104,7 @@ module Rpdfium
       end
       alias find tables
 
-      # Estrai i dati di tutte le tabelle: Array<Array<Array<String>>>.
+      # Extract the data of all tables: Array<Array<Array<String>>>.
       def extract(**text_opts)
         merged = {
           x_tolerance: @settings[:text_x_tolerance],
@@ -117,7 +118,7 @@ module Rpdfium
       private
 
       def resolve_settings(s)
-        # Cascata x/y dai non-suffissi
+        # Cascade x/y from the un-suffixed values
         s[:snap_x_tolerance] ||= s[:snap_tolerance]
         s[:snap_y_tolerance] ||= s[:snap_tolerance]
         s[:join_x_tolerance] ||= s[:join_tolerance]
@@ -164,9 +165,9 @@ module Rpdfium
       end
 
       def page_words
-        # Genera words usando il nostro WordExtractor (consistente con
-        # quello usato in Table#extract, così i thresholds combaciano).
-        # `lean: true`: vedi commento in Table#extract.
+        # Generate words using our WordExtractor (consistent with the one
+        # used in Table#extract, so the thresholds match).
+        # `lean: true`: see comment in Table#extract.
         chars = @page.chars(lean: true)
         Util::WordExtractor.new(
           x_tolerance: @settings[:text_x_tolerance],
@@ -187,11 +188,11 @@ module Rpdfium
         end
       end
 
-      # Converte i `vertical_lines` di Page (formato {x, top, bottom}) al
-      # formato pdfplumber-style atteso dalle Edges.
-      # Nota: in 0.3.0 NON includiamo i lati di rettangoli quando :strict
-      # (ma al momento Page non li espone separatamente, è una semplificazione
-      # che documenteremo).
+      # Converts Page's `vertical_lines` (format {x, top, bottom}) to the
+      # pdfplumber-style format expected by Edges.
+      # Note: in 0.3.0 we do NOT include rectangle sides when :strict
+      # (but at present Page does not expose them separately, a
+      # simplification that we will document).
       def page_vertical_edges(strict: false) # rubocop:disable Lint/UnusedMethodArgument
         prefilter = @settings[:edge_min_length_prefilter]
         @page.vertical_lines.filter_map do |s|

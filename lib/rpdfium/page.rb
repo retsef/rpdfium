@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
 module Rpdfium
-  # Wrapper di pagina. Lazy-load di TextPage. Tutte le coordinate restituite
-  # sono nello spazio "top-down" della pagina: (0,0) è in alto a sinistra,
-  # x cresce verso destra, y verso il basso. PDFium usa "bottom-up" — la
-  # conversione avviene qui una volta sola.
+  # Page wrapper. Lazy-loads the TextPage. All returned coordinates are
+  # in the page's "top-down" space: (0,0) is at the top left, x grows
+  # toward the right, y toward the bottom. PDFium uses "bottom-up" — the
+  # conversion happens here once and for all.
   class Page
     attr_reader :document, :index
 
@@ -15,10 +15,10 @@ module Rpdfium
       raise PageError, "Could not load page #{index}" if handle.null?
 
       @text_page = nil
-      # Stato condiviso col finalizer: idempotenza su close, sopravvive al GC
-      # senza fare doppia chiamata FPDF_ClosePage. Tenere un riferimento a
-      # @document garantisce che il Document non venga raccolto prima della
-      # Page (FPDF_ClosePage richiede Document ancora vivo).
+      # State shared with the finalizer: idempotent on close, survives GC
+      # without making a double FPDF_ClosePage call. Holding a reference to
+      # @document guarantees that the Document is not collected before the
+      # Page (FPDF_ClosePage requires the Document still alive).
       @state = { handle: handle, closed: false }
       ObjectSpace.define_finalizer(self, self.class.finalizer(@state))
     end
@@ -37,12 +37,12 @@ module Rpdfium
       @state[:handle]
     end
 
-    # ===== Geometria =====
+    # ===== Geometry =====
 
     def width;    Raw.FPDF_GetPageWidthF(@state[:handle]); end
     def height;   Raw.FPDF_GetPageHeightF(@state[:handle]); end
 
-    # Rotazione in gradi: 0/90/180/270
+    # Rotation in degrees: 0/90/180/270
     def rotation
       [0, 90, 180, 270][Raw.FPDFPage_GetRotation(@state[:handle])] || 0
     end
@@ -71,19 +71,20 @@ module Rpdfium
         right: r.read_float, top: t.read_float }
     end
 
-    # Accessor pdfplumber-compatibili. Restituiscono il box come tuple
-    # [x0, top, x1, bottom] in coordinate top-down (lo stesso sistema
-    # usato da chars, edges, table cells). Ritornano nil se il box non
-    # è definito nel PDF (es. ArtBox o BleedBox sono spesso assenti).
+    # pdfplumber-compatible accessors. Return the box as the tuple
+    # [x0, top, x1, bottom] in top-down coordinates (the same system
+    # used by chars, edges, table cells). Return nil if the box is not
+    # defined in the PDF (e.g. ArtBox or BleedBox are often absent).
     #
-    # Esempio d'uso:
-    #   crop = page.cropbox        # → [0.0, 0.0, 595.28, 841.88] o nil
-    #   crop != [0, 0, page.width, page.height]  # PDF ha un crop esplicito
+    # Usage example:
+    #   crop = page.cropbox        # → [0.0, 0.0, 595.28, 841.88] or nil
+    #   crop != [0, 0, page.width, page.height]  # PDF has an explicit crop
     def mediabox; box_to_topdown(box(:media)); end
 
-    # PDF spec 14.11.2: se CropBox è assente, default è MediaBox. La cropbox è
-    # l'area "visibile" della pagina; per PDF da gestionali coincide spesso
-    # con la MediaBox. Pdfplumber fa il fallback automatico.
+    # PDF spec 14.11.2: if CropBox is absent, the default is MediaBox. The
+    # cropbox is the "visible" area of the page; for PDFs from business
+    # software it often coincides with the MediaBox. pdfplumber performs the
+    # fallback automatically.
     def cropbox
       box_to_topdown(box(:crop)) || mediabox
     end
@@ -92,7 +93,7 @@ module Rpdfium
     def trimbox;  box_to_topdown(box(:trim));  end
     def artbox;   box_to_topdown(box(:art));   end
 
-    # ===== Testo (versione "semplice") =====
+    # ===== Text ("simple" version) =====
 
     def text
       tp = text_page
@@ -106,15 +107,15 @@ module Rpdfium
         .delete("\x00")
     end
 
-    # Estrae il testo dentro una bbox arbitraria (top-down coords).
-    # Utile per "leggi l'intestazione di questa cella".
+    # Extracts the text inside an arbitrary bbox (top-down coords).
+    # Useful for "read the header of this cell".
     def text_in_bbox(left:, top:, right:, bottom:)
       tp = text_page
       h = height
-      # Converti a bottom-up per PDFium
+      # Convert to bottom-up for PDFium
       pdf_top    = h - top
       pdf_bottom = h - bottom
-      # PDFium vuole: left, top, right, bottom dove top > bottom (PDF coords)
+      # PDFium wants: left, top, right, bottom where top > bottom (PDF coords)
       # Probe size:
       n = Raw.FPDFText_GetBoundedText(
         tp.handle, left, pdf_top, right, pdf_bottom, FFI::Pointer::NULL, 0
@@ -130,40 +131,40 @@ module Rpdfium
         .delete("\x00")
     end
 
-    # ===== Caratteri (char-level) =====
+    # ===== Characters (char-level) =====
 
-    # Ritorna ogni char con metadata ricco:
-    #   :char     stringa (1 codepoint)
-    #   :x0,:x1   bbox orizzontale
-    #   :top,:bottom  bbox verticale (top-down: top < bottom)
-    #   :origin_x, :origin_y  punto di inserimento del glifo (top-down)
-    #   :angle    angolo di rotazione del glifo (radianti)
-    #   :fontsize taglia in punti
-    #   :font     nome font (se disponibile)
-    #   :weight   spessore (es. 400=regular, 700=bold)
-    #   :render_mode  modalità rendering (fill/stroke/invisible). Letto via
-    #                 il text object che contiene il char (PDFium non
-    #                 espone più una API char-level dopo chromium/6611).
-    #                 nil su build PDFium antichi che non supportano il
-    #                 lookup char→object.
-    #   :generated  true se inserito da PDFium (es. spazi sintetici)
-    #   :hyphen   true se trattino di sillabazione
-    #   :unicode_error  true se PDFium non ha potuto mapparlo
+    # Returns every char with rich metadata:
+    #   :char     string (1 codepoint)
+    #   :x0,:x1   horizontal bbox
+    #   :top,:bottom  vertical bbox (top-down: top < bottom)
+    #   :origin_x, :origin_y  glyph insertion point (top-down)
+    #   :angle    glyph rotation angle (radians)
+    #   :fontsize size in points
+    #   :font     font name (if available)
+    #   :weight   weight (e.g. 400=regular, 700=bold)
+    #   :render_mode  rendering mode (fill/stroke/invisible). Read via
+    #                 the text object that contains the char (PDFium no
+    #                 longer exposes a char-level API after chromium/6611).
+    #                 nil on old PDFium builds that do not support the
+    #                 char→object lookup.
+    #   :generated  true if inserted by PDFium (e.g. synthetic spaces)
+    #   :hyphen   true if a hyphenation hyphen
+    #   :unicode_error  true if PDFium could not map it
     #
-    # `loose: true` (DEFAULT) usa FPDFText_GetLooseCharBox: tutti i char
-    # della stessa linea logica condividono la stessa bbox verticale (top/
-    # bottom), proporzionale alla font size invece che al singolo glifo. È
-    # esattamente il comportamento di pdfminer.six/pdfplumber, e l'unico
-    # che permette al midpoint-test in Table#extract di catturare anche i
-    # char di punteggiatura (`.`, `,`) insieme ai numeri allineati alla
-    # baseline. Con `loose: false` si ottengono le bbox "tight" del singolo
-    # glifo, utili per misure di layout fine ma sbagliate per il filtro
-    # cella tabellare.
+    # `loose: true` (DEFAULT) uses FPDFText_GetLooseCharBox: all chars on
+    # the same logical line share the same vertical bbox (top/bottom),
+    # proportional to the font size rather than to the individual glyph.
+    # This is exactly the behavior of pdfminer.six/pdfplumber, and the only
+    # one that lets the midpoint test in Table#extract also capture
+    # punctuation chars (`.`, `,`) along with the numbers aligned to the
+    # baseline. With `loose: false` you get the "tight" bbox of the single
+    # glyph, useful for fine layout measurements but wrong for the table
+    # cell filter.
     def chars(loose: true, inject_spaces: true, lean: false)
-      # Cache: chars() viene chiamato una volta da Table#extract e poi
-      # nuovamente da WordExtractor (passando per Extractor#page_words se
-      # vertical/horizontal_strategy è :text). Ogni chiamata costa O(n) FFI
-      # roundtrip per char — costoso su pagine con migliaia di char.
+      # Cache: chars() is called once by Table#extract and then again by
+      # WordExtractor (going through Extractor#page_words if
+      # vertical/horizontal_strategy is :text). Each call costs O(n) FFI
+      # roundtrips per char — expensive on pages with thousands of chars.
       cache_key = [loose, inject_spaces, lean]
       @chars_cache ||= {}
       return @chars_cache[cache_key] if @chars_cache.key?(cache_key)
@@ -173,31 +174,31 @@ module Rpdfium
       @chars_cache[cache_key] = result
     end
 
-    # Ricostruisce gli spazi che separano le parole basandosi sulla
-    # GEOMETRIA dei char "veri", scartando completamente gli spazi
-    # sintetici di PDFium (che sono inaffidabili: PDFium li emette in
-    # modo aggressivo anche tra cifre di numeri come "2.895,26").
+    # Rebuilds the spaces that separate words based on the GEOMETRY of the
+    # "real" chars, completely discarding PDFium's synthetic spaces (which
+    # are unreliable: PDFium emits them aggressively even between digits of
+    # numbers like "2.895,26").
     #
-    # Algoritmo:
-    #   1. Filtra via tutti i char :generated (tipicamente spazi sintetici
-    #      con bbox degenere).
-    #   2. Cluster i char rimasti per riga (top tolerance 1pt).
-    #   3. Dentro ogni riga, sort per x0 e per ogni coppia consecutiva
-    #      calcola gap = next.x0 - prev.x1 e char_w = (prev.w + next.w) / 2.
-    #      Se gap > 0.275 × char_w → inserisci spazio sintetico nuovo
-    #      (bbox normalizzata al top/bottom dei char).
+    # Algorithm:
+    #   1. Filter out all :generated chars (typically synthetic spaces
+    #      with a degenerate bbox).
+    #   2. Cluster the remaining chars by row (top tolerance 1pt).
+    #   3. Within each row, sort by x0 and for each consecutive pair
+    #      compute gap = next.x0 - prev.x1 and char_w = (prev.w + next.w) / 2.
+    #      If gap > 0.275 × char_w → insert a new synthetic space
+    #      (bbox normalized to the top/bottom of the chars).
     #
-    # Soglia 0.275: tarata empiricamente su PDF TeamSystem reale.
-    # Distribuzione misurata: gap intra-parola max ratio 0.24, gap
-    # inter-parola min ratio 0.31. Classificazione 100% corretta sul
-    # dataset di training (1400 intra + 663 inter casi). Pdfminer.six
-    # usa internamente 0.1 (`word_margin`) ma con info aggiuntive
-    # dall'advance del font, non disponibile da PDFium.
+    # Threshold 0.275: tuned empirically on a real TeamSystem PDF.
+    # Measured distribution: intra-word gap max ratio 0.24, inter-word
+    # gap min ratio 0.31. Classification 100% correct on the training
+    # dataset (1400 intra + 663 inter cases). pdfminer.six uses 0.1
+    # internally (`word_margin`) but with additional info from the font
+    # advance, not available from PDFium.
     def rebuild_word_separators(chars)
       reals = chars.reject { |c| c[:generated] }
       return chars if reals.empty?
 
-      # Cluster per riga, mantenendo l'ordine di top
+      # Cluster by row, preserving the top ordering
       sorted_top = reals.sort_by { |c| c[:top] }
       rows = []
       sorted_top.each do |c|
@@ -216,19 +217,19 @@ module Rpdfium
           if prev
             gap = c[:x0] - prev[:x1]
 
-            # Segnale dal content stream PDF: prev.text_obj_ends_with_space.
-            # Se prev NON termina un token (false), il gap è kerning interno
-            # → mai inserire spazio.
+            # Signal from the PDF content stream: prev.text_obj_ends_with_space.
+            # If prev does NOT end a token (false), the gap is internal
+            # kerning → never insert a space.
             #
-            # Se prev termina un token (true), può essere:
-            #   - vera fine parola (gap geometrico relativamente grande)
-            #   - fine token sintattico (es. tra cifre e punteggiatura di
-            #     un numero "2", "."), con gap piccolo.
+            # If prev ends a token (true), it may be:
+            #   - a real word end (relatively large geometric gap)
+            #   - a syntactic token end (e.g. between digits and punctuation
+            #     of a number "2", "."), with a small gap.
             #
-            # Discrimino con la soglia geometrica abbinata al "contesto"
-            # tipografico: se la coppia (prev_char, curr_char) sembra un
-            # contesto numerico (cifre + punteggiatura), uso soglia più
-            # alta; altrimenti soglia normale.
+            # We discriminate with the geometric threshold combined with the
+            # typographic "context": if the pair (prev_char, curr_char) looks
+            # like a numeric context (digits + punctuation), we use a higher
+            # threshold; otherwise the normal threshold.
             obj_signal_present = prev.key?(:text_obj_ends_with_space)
             obj_says_continues = obj_signal_present && !prev[:text_obj_ends_with_space]
 
@@ -246,11 +247,11 @@ module Rpdfium
       result
     end
 
-    # True se la coppia (prev_char, curr_char) è un contesto "numerico":
-    # cifra-punteggiatura, punteggiatura-cifra, o cifra-cifra. In questi
-    # casi un gap modesto è probabilmente kerning interno al numero, non
-    # confine di parola. Soglia più alta per evitare di spezzare numeri
-    # come "2.895,26" in "2 . 895 , 26".
+    # True if the pair (prev_char, curr_char) is a "numeric" context:
+    # digit-punctuation, punctuation-digit, or digit-digit. In these
+    # cases a modest gap is probably kerning internal to the number, not
+    # a word boundary. A higher threshold avoids splitting numbers like
+    # "2.895,26" into "2 . 895 , 26".
     NUMERIC_PUNCT = %w[. , ].freeze
 
     def numeric_context?(prev_char, curr_char)
@@ -261,10 +262,10 @@ module Rpdfium
       prev_num && curr_num
     end
 
-    # Ritorna la larghezza "di riferimento" per il calcolo del ratio
-    # gap/width. Preferisce l'advance (più stabile di bbox per char con
-    # kerning post-applied). Se uno dei due char non ha advance, fallback
-    # su max delle bbox-width.
+    # Returns the "reference" width for computing the gap/width ratio.
+    # Prefers the advance (more stable than the bbox for chars with
+    # post-applied kerning). If either char lacks an advance, falls back
+    # to the max of the bbox widths.
     def best_reference_width(a, b)
       a_adv = a[:advance]
       b_adv = b[:advance]
@@ -294,7 +295,7 @@ module Rpdfium
       n = tp.char_count
       return [] if n.zero?
 
-      # Geometria della pagina dopo l'applicazione della rotazione PDF.
+      # Page geometry after applying the PDF rotation.
       h = height
       w = width
       page_rotation = rotation
@@ -306,9 +307,9 @@ module Rpdfium
 
       result = Array.new(n)
 
-      # Buffer FFI riusati tra tutte le iterazioni del loop.
-      # MemoryPointer.new è non-banale (~µs ciascuna), allocarne O(n) per
-      # char è il principale costo di compute_chars dopo le chiamate FFI.
+      # FFI buffers reused across all loop iterations.
+      # MemoryPointer.new is non-trivial (~µs each); allocating O(n) of them
+      # per char is the main cost of compute_chars after the FFI calls.
       l = FFI::MemoryPointer.new(:double)
       r = FFI::MemoryPointer.new(:double)
       b = FFI::MemoryPointer.new(:double)
@@ -332,7 +333,7 @@ module Rpdfium
         origin_x_raw = ox.read_double
         origin_y_raw = oy.read_double
 
-        # Font name: skippato in lean (1 FFI risparmiata per char).
+        # Font name: skipped in lean mode (1 FFI call saved per char).
         font_name = nil
         unless lean
           n_bytes = Raw.FPDFText_GetFontInfo(tp_handle, i, font_buf, 256, flags_buf)
@@ -351,9 +352,9 @@ module Rpdfium
           fetch_text_obj_info(text_obj, tp, text_obj_cache,
                               fs_buf: fs_buf, text_buf: text_obj_text_buf)
 
-        # Advance: 2 FFI per char (GetGlyphWidth + GetMatrix). In lean
-        # mode skippiamo — best_reference_width fa fallback su bbox-width
-        # che funziona altrettanto bene per il discriminante word-boundary.
+        # Advance: 2 FFI calls per char (GetGlyphWidth + GetMatrix). In lean
+        # mode we skip it — best_reference_width falls back to bbox-width
+        # which works just as well for the word-boundary discriminant.
         advance = if lean
                     nil
                   else
@@ -366,12 +367,12 @@ module Rpdfium
                                        x0, x1, y_top, y_bot,
                                        origin_x_raw, origin_y_raw)
 
-        # In lean mode skippiamo 5 chiamate FFI per char:
+        # In lean mode we skip 5 FFI calls per char:
         # GetCharAngle, GetFontWeight, IsHyphen, HasUnicodeMapError,
-        # (e GetFontSize fallback se font_size_for_obj è nil).
-        # Su pagine con migliaia di char il risparmio è significativo
-        # (decine di ms). I metadata risultano nil/false, che è il valore
-        # neutro per il pipeline text/tables/words interno.
+        # (and the GetFontSize fallback if font_size_for_obj is nil).
+        # On pages with thousands of chars the saving is significant
+        # (tens of ms). The metadata come out nil/false, which is the
+        # neutral value for the internal text/tables/words pipeline.
         result[i] =
           if lean
             {
@@ -422,67 +423,67 @@ module Rpdfium
       result
     end
 
-    # Applica la rotazione della pagina alle coordinate di un char.
+    # Applies the page rotation to a char's coordinates.
     #
-    # Input: coord PDFium raw (bottom-up, pre-rotazione) di un bbox
-    # `[x0, x1, y_top, y_bot]` (con y_top > y_bot perché bottom-up) e
-    # di un origin point.
+    # Input: raw PDFium coords (bottom-up, pre-rotation) of a bbox
+    # `[x0, x1, y_top, y_bot]` (with y_top > y_bot because bottom-up) and
+    # of an origin point.
     #
-    # Output: coord top-down nel sistema della pagina post-rotazione,
-    # nella convenzione standard di rpdfium: `[x0, x1, top, bottom]`
-    # con `top < bottom`. Coerente con pdfplumber.
+    # Output: top-down coords in the post-rotation page system, in the
+    # standard rpdfium convention: `[x0, x1, top, bottom]` with
+    # `top < bottom`. Consistent with pdfplumber.
     #
-    # Convenzione PDFium: GetRotation = N significa che la pagina visualizzata
-    # è ruotata di N*90° in senso orario rispetto al sistema raw del content
-    # stream. PDFium restituisce le coord nel sistema raw; applichiamo la
-    # rotazione per allineare al rendering.
+    # PDFium convention: GetRotation = N means the displayed page is
+    # rotated by N*90° clockwise relative to the raw content stream
+    # system. PDFium returns the coords in the raw system; we apply the
+    # rotation to align with the rendering.
     #
-    # Caso 0°: identità + bottom-up→top-down.
-    # Caso 90° CW: bbox larga in x diventa alta in y. La x_min (sinistra) raw
-    #   coincide con il top (alto) del sistema post-rotazione.
-    # Caso 180°: ribalta entrambi gli assi.
-    # Caso 270° CW: bbox larga in x diventa alta in y, ma invertita verticalmente.
+    # Case 0°: identity + bottom-up→top-down.
+    # Case 90° CW: a bbox wide in x becomes tall in y. The raw x_min (left)
+    #   coincides with the top of the post-rotation system.
+    # Case 180°: flips both axes.
+    # Case 270° CW: a bbox wide in x becomes tall in y, but flipped vertically.
     def apply_page_rotation_to_char(rotation, raw_w, raw_h,
                                      x0, x1, y_top, y_bot,
                                      origin_x, origin_y)
       case rotation
       when 0, nil
-        # Nessuna rotazione. Bottom-up → top-down standard.
+        # No rotation. Standard bottom-up → top-down.
         # page_h_post == raw_h.
         [x0, x1, raw_h - y_top, raw_h - y_bot,
          origin_x, raw_h - origin_y]
 
       when 90
-        # 90° CW. Dimensioni post-rotation: w=raw_h, h=raw_w.
-        # Trasformazione: x_post = y_raw, y_post = raw_w - x_raw (bottom-up).
+        # 90° CW. Post-rotation dimensions: w=raw_h, h=raw_w.
+        # Transform: x_post = y_raw, y_post = raw_w - x_raw (bottom-up).
         # In top-down: top = x_min_raw, bottom = x_max_raw.
-        new_x0 = y_bot   # piccolo y_raw → piccolo x_post
-        new_x1 = y_top   # grande y_raw → grande x_post
-        new_top    = x0  # piccolo x_raw → top piccolo (alto)
-        new_bottom = x1  # grande x_raw → bottom grande (basso)
+        new_x0 = y_bot   # small y_raw → small x_post
+        new_x1 = y_top   # large y_raw → large x_post
+        new_top    = x0  # small x_raw → small top (high)
+        new_bottom = x1  # large x_raw → large bottom (low)
         new_ox = origin_y
         new_oy = origin_x       # top-down origin_y = x_raw
         [new_x0, new_x1, new_top, new_bottom, new_ox, new_oy]
 
       when 180
-        # 180°. Dimensioni post-rotation: invariate (raw_w × raw_h).
-        # Trasformazione: x_post = raw_w - x_raw, y_post = raw_h - y_raw.
+        # 180°. Post-rotation dimensions: unchanged (raw_w × raw_h).
+        # Transform: x_post = raw_w - x_raw, y_post = raw_h - y_raw.
         # In top-down: top = y_bot_raw, bottom = y_top_raw.
         new_x0 = raw_w - x1
         new_x1 = raw_w - x0
-        new_top    = y_bot   # bottom raw → top td (alto)
-        new_bottom = y_top   # top raw → bottom td (basso)
+        new_top    = y_bot   # raw bottom → td top (high)
+        new_bottom = y_top   # raw top → td bottom (low)
         new_ox = raw_w - origin_x
         new_oy = y_top.zero? ? raw_h - origin_y : raw_h - origin_y
-        # nota: origin in top-down post-180 = y_origin_raw
+        # note: origin in top-down post-180 = y_origin_raw
         new_oy = origin_y
         [new_x0, new_x1, new_top, new_bottom, new_ox, new_oy]
 
       when 270
-        # 270° CW (= 90° CCW). Dimensioni post-rotation: w=raw_h, h=raw_w.
-        # Trasformazione: x_post = raw_h - y_raw, y_post = x_raw (bottom-up).
+        # 270° CW (= 90° CCW). Post-rotation dimensions: w=raw_h, h=raw_w.
+        # Transform: x_post = raw_h - y_raw, y_post = x_raw (bottom-up).
         # In top-down: top = raw_w - x_max_raw, bottom = raw_w - x_min_raw.
-        new_x0 = raw_h - y_top  # grande y → piccolo x_post
+        new_x0 = raw_h - y_top  # large y → small x_post
         new_x1 = raw_h - y_bot
         new_top    = raw_w - x1
         new_bottom = raw_w - x0
@@ -491,22 +492,22 @@ module Rpdfium
         [new_x0, new_x1, new_top, new_bottom, new_ox, new_oy]
 
       else
-        # Rotazione non standard (non multipla di 90°): fallback al
-        # comportamento pre-rotazione. Non dovrebbe mai succedere per
-        # PDF ben formati.
+        # Non-standard rotation (not a multiple of 90°): fall back to
+        # the pre-rotation behavior. This should never happen for
+        # well-formed PDFs.
         [x0, x1, raw_h - y_top, raw_h - y_bot,
          origin_x, raw_h - origin_y]
       end
     end
 
-    # Cache lookup per text object. Restituisce tupla:
+    # Cache lookup for a text object. Returns a tuple:
     #   [render_mode, font_handle, font_size, ends_with_space]
     #
-    # `ends_with_space` indica se il testo dell'intero text object termina
-    # con uno spazio (segnale "fine token" dichiarato dal PDF). È una
-    # proprietà dell'oggetto, non del singolo char, quindi può essere
-    # calcolata una volta sola e cachata insieme agli altri campi — evita
-    # una chiamata FPDFTextObj_GetText per ogni char che condivide l'obj.
+    # `ends_with_space` indicates whether the text of the entire text object
+    # ends with a space (a "token end" signal declared by the PDF). It is a
+    # property of the object, not of the single char, so it can be computed
+    # once and cached together with the other fields — this avoids one
+    # FPDFTextObj_GetText call for every char that shares the obj.
     def fetch_text_obj_info(text_obj, tp, cache, fs_buf:, text_buf:)
       return [nil, nil, nil, nil] if text_obj.nil? || text_obj.null?
 
@@ -529,11 +530,11 @@ module Rpdfium
       tuple
     end
 
-    # Versione "fast" di read_text_obj_text_from: riusa il buffer passato
-    # invece di allocarlo. Per il 99% dei text obj il buffer iniziale da
-    # 256 byte basta; nel caso raro che PDFium richieda più spazio, alloca
-    # un buffer più grande on-demand (questa è una path rara, OK
-    # allocare).
+    # "Fast" version of read_text_obj_text_from: reuses the passed buffer
+    # instead of allocating it. For 99% of text objs the initial 256-byte
+    # buffer is enough; in the rare case PDFium requires more space, it
+    # allocates a larger buffer on demand (this is a rare path, OK to
+    # allocate).
     def read_text_obj_text_fast(text_obj, tp, buf)
       return nil if text_obj.nil? || text_obj.null?
 
@@ -542,7 +543,7 @@ module Rpdfium
       return nil if needed < 2
 
       if needed > TEXT_OBJ_INITIAL_BUF_BYTES
-        # Path raro: text obj con > 128 char. Alloco buffer dedicato.
+        # Rare path: text obj with > 128 chars. Allocate a dedicated buffer.
         big_buf = FFI::MemoryPointer.new(:uint8, needed)
         needed = Raw.FPDFTextObj_GetText(text_obj, tp.handle, big_buf, needed)
         return nil if needed < 2
@@ -565,8 +566,8 @@ module Rpdfium
          .delete("\u0000")
     end
 
-    # Versione "fast" di compute_glyph_advance: riusa gw_buf e matrix
-    # invece di allocarli per char. Stesso comportamento funzionale.
+    # "Fast" version of compute_glyph_advance: reuses gw_buf and matrix
+    # instead of allocating them per char. Same functional behavior.
     def compute_glyph_advance_fast(font, codepoint, font_size, tp_handle,
                                     char_index, gw_buf, matrix)
       return nil if font.nil? || font_size.nil?
@@ -580,7 +581,7 @@ module Rpdfium
 
       glyph_w_font_units = gw_buf.read_float
 
-      # CTM scale: riuso la matrix in-place.
+      # CTM scale: reuse the matrix in-place.
       scale = if Raw.FPDFText_GetMatrix(tp_handle, char_index, matrix) == 1
                 matrix[:a].abs
               else
@@ -589,36 +590,36 @@ module Rpdfium
       glyph_w_font_units * scale
     end
 
-    # Buffer size iniziale per FPDFTextObj_GetText: 256 byte = 128 char UTF-16.
-    # Empiricamente sufficiente per ~99% dei text object reali (parole singole
-    # o frasi brevi). Quando un text obj è più grande, ricadiamo nel probe-then-
-    # fetch corretto.
+    # Initial buffer size for FPDFTextObj_GetText: 256 bytes = 128 UTF-16 chars.
+    # Empirically sufficient for ~99% of real text objects (single words or
+    # short phrases). When a text obj is larger, we fall back to the correct
+    # probe-then-fetch.
     TEXT_OBJ_INITIAL_BUF_BYTES = 256
 
-    # Legge il testo di un text object PDF.
+    # Reads the text of a PDF text object.
     #
-    # Firma C: `unsigned long FPDFTextObj_GetText(FPDF_PAGEOBJECT, FPDF_TEXTPAGE,
-    # FPDF_WCHAR* buffer, unsigned long length)` — length in BYTE, return è
-    # il numero di byte totali necessari (incluso null terminator), anche se
-    # il buffer è troppo piccolo. Pattern: prova con buffer stack-friendly,
-    # se PDFium ne richiede di più rialloca.
+    # C signature: `unsigned long FPDFTextObj_GetText(FPDF_PAGEOBJECT, FPDF_TEXTPAGE,
+    # FPDF_WCHAR* buffer, unsigned long length)` — length in BYTES, the return
+    # is the total number of bytes needed (including the null terminator), even
+    # if the buffer is too small. Pattern: try with a stack-friendly buffer,
+    # if PDFium requires more, reallocate.
     def read_text_obj_text_from(text_obj, tp, _char_index_unused = nil)
       return nil if text_obj.nil? || text_obj.null?
 
-      # Prima tentativo: buffer fisso da 256 byte. Risolve il 99% dei casi.
+      # First attempt: fixed 256-byte buffer. Resolves 99% of cases.
       buf = FFI::MemoryPointer.new(:uint8, TEXT_OBJ_INITIAL_BUF_BYTES)
       needed = Raw.FPDFTextObj_GetText(text_obj, tp.handle, buf,
                                         TEXT_OBJ_INITIAL_BUF_BYTES)
       return nil if needed < 2
 
-      # Se PDFium ne vuole più di quanto allocato, rialloca esatto.
+      # If PDFium wants more than what was allocated, reallocate exactly.
       if needed > TEXT_OBJ_INITIAL_BUF_BYTES
         buf = FFI::MemoryPointer.new(:uint8, needed)
         needed = Raw.FPDFTextObj_GetText(text_obj, tp.handle, buf, needed)
         return nil if needed < 2
       end
 
-      # Clamp difensivo: non leggo mai più di quanto allocato.
+      # Defensive clamp: never read more than what was allocated.
       buf_capacity = buf.size
       payload_bytes = [needed - 2, buf_capacity - 2].min
       return nil if payload_bytes <= 0
@@ -629,11 +630,11 @@ module Rpdfium
          .delete("\u0000")
     end
 
-    # Calcola l'advance del glifo in coordinate pagina, per un char
-    # specifico identificato da (text_page, char_index).
+    # Computes the glyph advance in page coordinates, for a specific char
+    # identified by (text_page, char_index).
     # Formula: glyph_width(font, codepoint, font_size) × |CTM.a|.
-    # Ritorna nil se l'advance non è calcolabile (font non disponibile,
-    # PDFium che non supporta l'API).
+    # Returns nil if the advance is not computable (font unavailable,
+    # PDFium not supporting the API).
     def compute_glyph_advance(font, codepoint, font_size, tp, char_index)
       return nil if font.nil? || font_size.nil?
 
@@ -641,7 +642,7 @@ module Rpdfium
       ok = begin
         Raw.FPDFFont_GetGlyphWidth(font, codepoint, font_size, gw_buf)
       rescue Rpdfium::LoadError
-        return nil  # FPDFFont_GetGlyphWidth non disponibile in build vecchi
+        return nil  # FPDFFont_GetGlyphWidth not available in old builds
       end
       return nil if ok == 0
 
@@ -650,7 +651,7 @@ module Rpdfium
       glyph_w_font_units * scale
     end
 
-    # Calcola la scala orizzontale del CTM per un char specifico.
+    # Computes the horizontal CTM scale for a specific char.
     def char_ctm_scale_x(tp, char_index)
       mat = Raw::FS_MATRIX.new
       return nil if Raw.FPDFText_GetMatrix(tp.handle, char_index, mat) == 0
@@ -660,42 +661,42 @@ module Rpdfium
 
     # ===== Form-aware extraction =====
     #
-    # PDF di "moduli compilati" (F24, Comunicazione IVA, 770, ecc.) sono PDF
-    # di output dove il modello prestampato e i valori inseriti coesistono
-    # come testo grafico — nessun AcroForm, nessun tag PDF/UA. Il pipeline
-    # geometrico di estrazione tabelle vede il modulo intero e produce
-    # rumore (etichette del template mescolate ai dati).
+    # "Filled form" PDFs (F24, Comunicazione IVA, 770, etc.) are output PDFs
+    # where the pre-printed template and the entered values coexist as
+    # graphical text — no AcroForm, no PDF/UA tag. The geometric table
+    # extraction pipeline sees the whole form and produces noise (template
+    # labels mixed in with the data).
     #
-    # La strategia robusta su questi PDF è separare i char per "ruolo"
-    # usando font/altezza, che tipicamente differiscono tra il template
-    # (font proporzionali, dimensioni varie) e i dati inseriti dal
-    # gestionale (un singolo font, tipicamente Courier o Helvetica,
-    # una sola size).
+    # The robust strategy on these PDFs is to separate the chars by "role"
+    # using font/height, which typically differ between the template
+    # (proportional fonts, various sizes) and the data entered by the
+    # business software (a single font, typically Courier or Helvetica,
+    # a single size).
     #
-    # Esempio classico F24:
+    # Classic F24 example:
     #   Template: Futura-Light, Futura-Bold, Futura-Heavy, Times-Bold
-    #   Dati:     Courier 10.0
+    #   Data:     Courier 10.0
     #
-    #   page.font_inventory          # → vede tutti i (font, height)
+    #   page.font_inventory          # → sees all the (font, height)
     #   page.chars_where(font: /Courier/i)
-    #     # → solo i char dei dati inseriti
-    #   page.lines(font: /Courier/i) # → testo dei dati riga per riga
+    #     # → only the chars of the entered data
+    #   page.lines(font: /Courier/i) # → data text line by line
 
-    # Distribuzione dei char per (font, altezza visiva, weight).
+    # Distribution of chars by (font, visual height, weight).
     #
-    # Ritorna un Array di Hash ordinato per count decrescente:
+    # Returns an Array of Hash sorted by descending count:
     #   [{ font:, height:, weight:, count:, sample: }, ...]
     #
-    # `height` è l'altezza visiva del char in punti (bottom - top), più
-    # affidabile di `fontsize` che PDFium normalizza a 1.0 quando la
-    # dimensione reale è nella matrice CTM (caso comune sui moduli
-    # generati con scaling).
+    # `height` is the visual height of the char in points (bottom - top),
+    # more reliable than `fontsize`, which PDFium normalizes to 1.0 when the
+    # real size is in the CTM matrix (a common case on forms generated with
+    # scaling).
     #
-    # `sample` sono i primi 40 char di quel gruppo, per ispezione.
+    # `sample` is the first 40 chars of that group, for inspection.
     #
-    # Usalo per scegliere il filtro `chars_where`: tipicamente il font
-    # con più char è il template, e i font minoritari (1 solo size,
-    # spesso monospace) sono i dati.
+    # Use it to choose the `chars_where` filter: typically the font with the
+    # most chars is the template, and the minority fonts (a single size,
+    # often monospace) are the data.
     def font_inventory
       groups = chars.reject { |c| c[:generated] }.group_by do |c|
         h = (c[:bottom] - c[:top]).round(1)
@@ -712,25 +713,24 @@ module Rpdfium
       end.sort_by { |g| -g[:count] }
     end
 
-    # Filtro char generico. Ritorna i char che matchano TUTTI i predicati
-    # specificati (intersezione, non unione).
+    # Generic char filter. Returns the chars that match ALL the specified
+    # predicates (intersection, not union).
     #
-    # Argomenti supportati:
-    #   font:   String esatto, Array<String>, o Regexp
-    #   height: Float (singolo valore), Range, Array<Float>
-    #   weight: Integer o Range
-    #   bbox:   [left, top, right, bottom] in coord top-down della pagina
-    #   where:  block che riceve l'hash char, deve ritornare truthy
+    # Supported arguments:
+    #   font:   exact String, Array<String>, or Regexp
+    #   height: Float (single value), Range, Array<Float>
+    #   weight: Integer or Range
+    #   bbox:   [left, top, right, bottom] in the page's top-down coords
+    #   where:  block that receives the char hash, must return truthy
     #
-    # Tutti i parametri sono opzionali; quelli passati vengono combinati
-    # in AND.
+    # All parameters are optional; the ones passed are combined with AND.
     #
-    # Tipicamente combinato con WordExtractor per estrarre testo "pulito":
+    # Typically combined with WordExtractor to extract "clean" text:
     #
     #   data_chars = page.chars_where(font: /Courier/i)
     #   words = Rpdfium::Util::WordExtractor.new.extract_words(data_chars)
     #
-    # oppure usato come building block per pipeline custom.
+    # or used as a building block for custom pipelines.
     def chars_where(font: nil, height: nil, weight: nil, bbox: nil, where: nil, **char_opts)
       cs = chars(**char_opts)
 
@@ -749,28 +749,28 @@ module Rpdfium
       end
     end
 
-    # Raggruppa i char filtrati in righe logiche e ritorna un Array di
-    # stringhe (una per riga, top-to-bottom, char dentro la riga
-    # left-to-right). Conveniente quando il PDF è un modulo compilato
-    # e vuoi solo i valori inseriti come righe pulite.
+    # Groups the filtered chars into logical rows and returns an Array of
+    # strings (one per row, top-to-bottom, chars within the row
+    # left-to-right). Convenient when the PDF is a filled form and you
+    # want only the entered values as clean rows.
     #
-    # Esempio F24:
+    # F24 example:
     #
     #   page.lines(font: /Courier/i)
-    #   # => ["Soggetto:  MANAGEMENT  CONSULTING  S.R.L.  ( 02098120682 )",
-    #   #     "0  2  0  9  8  1  2  0  6  8  2",
-    #   #     "MANAGEMENT  CONSULTING  S.R.L.",
+    #   # => ["Soggetto:  Azienda  S.R.L.  ( 01234567890 )",
+    #   #     "0  1  2  3  4  5  6  7  8  9  0",
+    #   #     "Azienda  S.R.L.",
     #   #     "1001  11  2021  499,81  0,00",
     #   #     "1712  12  2021  32,46  0,00",
     #   #     "1701  11  2021  0,00  295,89",
     #   #     "532,27  295,89  236,38",
     #   #     ...]
     #
-    # I parametri di filtro sono gli stessi di `chars_where`. I parametri
-    # `x_tolerance` e `y_tolerance` controllano il WordExtractor.
+    # The filter parameters are the same as `chars_where`. The
+    # `x_tolerance` and `y_tolerance` parameters control the WordExtractor.
     #
-    # Il separatore inter-word è due spazi (per leggibilità su moduli con
-    # campi spaziati); cambialo con `separator:`.
+    # The inter-word separator is two spaces (for readability on forms with
+    # spaced fields); change it with `separator:`.
     def lines(x_tolerance: 3.0, y_tolerance: 3.0, separator: "  ",
               font: nil, height: nil, weight: nil, bbox: nil, where: nil,
               **char_opts)
@@ -783,40 +783,40 @@ module Rpdfium
       words = we.extract_words(cs)
       return [] if words.empty?
 
-      # Cluster per top (con tolleranza), poi ordina per x0 dentro la riga
+      # Cluster by top (with tolerance), then sort by x0 within the row
       rows = Util::Cluster.cluster_objects(words, :top, tolerance: y_tolerance)
       rows.map do |row_words|
         row_words.sort_by { |w| w[:x0] }.map { |w| w[:text] }.join(separator)
       end
     end
 
-    # Associa label semantiche del template ai valori inseriti sulla pagina.
-    # Per moduli compilati (F24, Comunicazione IVA, 770, ecc.) dove il
-    # template e i dati sono entrambi testo statico ma in font diversi.
+    # Associates the template's semantic labels with the values entered on
+    # the page. For filled forms (F24, Comunicazione IVA, 770, etc.) where
+    # the template and the data are both static text but in different fonts.
     #
-    # @param data_font [String, Regexp, Array] font del layer "dati" inseriti.
-    #   Tipicamente Courier (F24, 770) o Helvetica (Comunicazione IVA).
-    #   Vedi `Page#font_inventory` per identificarlo.
-    # Associa label semantiche del template ai valori inseriti sulla pagina.
-    # Primitiva per estrazione strutturata da moduli compilati dove
-    # template e dati coesistono come testo grafico in font diversi.
+    # @param data_font [String, Regexp, Array] font of the entered "data"
+    #   layer. Typically Courier (F24, 770) or Helvetica (Comunicazione IVA).
+    #   See `Page#font_inventory` to identify it.
+    # Associates the template's semantic labels with the values entered on
+    # the page. A primitive for structured extraction from filled forms
+    # where template and data coexist as graphical text in different fonts.
     #
-    # **Per casi avanzati** (tabelle ripetitive, merge di word multi-cella,
-    # output strutturato) componi con `Util::WordMerger`,
-    # `Util::ColumnInference`, e configura il `Util::LabelMatcher`
-    # opportunamente — vedi gli esempi nella docs.
+    # **For advanced cases** (repetitive tables, merging of multi-cell
+    # words, structured output) compose with `Util::WordMerger`,
+    # `Util::ColumnInference`, and configure the `Util::LabelMatcher`
+    # appropriately — see the examples in the docs.
     #
-    # @param data_font [String, Regexp, Array] font del layer "dati".
-    # @param template_font [String, Regexp, Array, nil] font del layer
-    #   "template". Se nil, usa tutti i char che NON sono in `data_font`.
-    # @param data_filter [Proc, nil] filtro opzionale sul testo dei valori.
-    # @param matcher [LabelMatcher, nil] istanza preconfigurata. Se nil,
-    #   ne crea una con i default.
-    # @param x_tolerance, y_tolerance [Float] tolleranze per WordExtractor.
-    # @param char_opts [Hash] kwargs passati a `#chars` (es. `inject_spaces:
-    #   false` per moduli a caselline).
+    # @param data_font [String, Regexp, Array] font of the "data" layer.
+    # @param template_font [String, Regexp, Array, nil] font of the
+    #   "template" layer. If nil, uses all chars that are NOT in `data_font`.
+    # @param data_filter [Proc, nil] optional filter on the value text.
+    # @param matcher [LabelMatcher, nil] preconfigured instance. If nil,
+    #   creates one with the defaults.
+    # @param x_tolerance, y_tolerance [Float] tolerances for WordExtractor.
+    # @param char_opts [Hash] kwargs passed to `#chars` (e.g. `inject_spaces:
+    #   false` for box-based forms).
     #
-    # @return [Array<Hash>] uno per valore:
+    # @return [Array<Hash>] one per value:
     #   { value:, labels: { col:, row: }, geometry: {...} }
     def label_value_pairs(data_font:, template_font: nil,
                           data_filter: nil, matcher: nil,
@@ -848,14 +848,14 @@ module Rpdfium
       cs = chars(**char_opts)
       return [] if cs.empty?
 
-      # Raggruppa in righe per y
+      # Group into rows by y
       rows = group_consecutive(cs.sort_by { |c| [c[:top], c[:x0]] }) do |a, b|
         (a[:top] - b[:top]).abs <= y_tolerance
       end
 
       rows.flat_map do |row|
         sorted = row.sort_by { |c| c[:x0] }
-        # Spezza su gap > x_tolerance o spazio esplicito
+        # Split on gap > x_tolerance or explicit space
         word_groups = []
         buf = []
         sorted.each do |c|
@@ -875,34 +875,34 @@ module Rpdfium
       end
     end
 
-    # ===== Linee vettoriali (path segments REALI) =====
+    # ===== Vector lines (REAL path segments) =====
 
-    # Estrae tutti i segmenti di linea (LINETO) dei path objects.
-    # Ritorna Array<Hash>:
-    #   :x0,:y0,:x1,:y1  estremi (top-down)
-    #   :stroke_width    spessore tratto
-    #   :horizontal/:vertical  derivati per comodità
+    # Extracts all the line segments (LINETO) of the path objects.
+    # Returns Array<Hash>:
+    #   :x0,:y0,:x1,:y1  endpoints (top-down)
+    #   :stroke_width    stroke width
+    #   :horizontal/:vertical  derived for convenience
     #
-    # Per le tabelle interessano principalmente i segmenti orizzontali e
-    # verticali "puri". Beziers e segmenti obliqui vengono ignorati di default
-    # (passa `include_curves: true` per averli come bbox dei loro punti).
+    # For tables, mainly the "pure" horizontal and vertical segments are of
+    # interest. Beziers and oblique segments are ignored by default
+    # (pass `include_curves: true` to get them as the bbox of their points).
     #
-    # Discende ricorsivamente nei Form XObjects applicando la loro matrice
-    # di trasformazione. Molti PDF (TeamSystem, Zucchetti, template Excel)
-    # incapsulano l'intera pagina in un Form XObject — senza discesa, qui
-    # vedremmo zero linee anche se visivamente la pagina è piena di
-    # bordi/separatori. Comportamento allineato a pdfminer.six (e quindi a
+    # Descends recursively into Form XObjects applying their transformation
+    # matrix. Many PDFs (TeamSystem, Zucchetti, Excel templates) encapsulate
+    # the entire page in a Form XObject — without the descent, we would see
+    # zero lines here even though the page is visually full of
+    # borders/separators. Behavior aligned with pdfminer.six (and therefore
     # pdfplumber).
-    # `include_curves` true: include i Bezier come segmenti (con flag :curve).
-    # `include_dashed` true: include le linee tratteggiate (con flag :dashed).
-    #   Default: false. Le tratteggiate spesso sono "guide" non-visive nei
-    #   template di stampa e confondono la detection cellule tabella. Chi
-    #   le vuole esplicitamente (es. drawing extraction completo) passa true.
+    # `include_curves` true: includes Beziers as segments (with the :curve flag).
+    # `include_dashed` true: includes dashed lines (with the :dashed flag).
+    #   Default: false. Dashed lines are often non-visual "guides" in print
+    #   templates and confuse table cell detection. Those who want them
+    #   explicitly (e.g. full drawing extraction) pass true.
     def line_segments(include_curves: false, include_dashed: false)
-      # Cache per parametri: line_segments viene tipicamente chiamato 2 volte
-      # per pagina (da horizontal_lines E da vertical_lines), e itera tutti
-      # i path objects della pagina via FFI — costoso su PDF con grafica
-      # ricca (es. CR Banca d'Italia: ~500-1000 path obj per pagina).
+      # Cache by parameters: line_segments is typically called twice per
+      # page (by horizontal_lines AND by vertical_lines), and iterates all
+      # the path objects of the page via FFI — expensive on PDFs with rich
+      # graphics (e.g. CR Banca d'Italia: ~500-1000 path objs per page).
       cache_key = [include_curves, include_dashed]
       @line_segments_cache ||= {}
       return @line_segments_cache[cache_key] if @line_segments_cache.key?(cache_key)
@@ -935,15 +935,15 @@ module Rpdfium
       end
     end
 
-    # Matrice identità nello spazio PDF: [1, 0, 0, 1, 0, 0]
+    # Identity matrix in PDF space: [1, 0, 0, 1, 0, 0]
     # (a, b, c, d, e, f) → (x', y') = (a*x + c*y + e,  b*x + d*y + f)
     def identity_matrix
       { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: 0.0, f: 0.0 }
     end
 
-    # Compone due trasformazioni affini PDF: applica `child` PRIMA di `parent`
-    # nello spazio PDF (notazione pdfminer.six "apply_matrix_norm").
-    # Equivale a: result = parent * child  (col-major).
+    # Composes two PDF affine transforms: applies `child` BEFORE `parent`
+    # in PDF space (pdfminer.six "apply_matrix_norm" notation).
+    # Equivalent to: result = parent * child  (col-major).
     def compose_matrix(parent, child)
       {
         a: parent[:a] * child[:a] + parent[:c] * child[:b],
@@ -968,10 +968,10 @@ module Rpdfium
         e: mat[:e], f: mat[:f] }
     end
 
-    # Itera oggetti di una page o di un Form XObject, applicando ricorsivamente
-    # la matrice di trasformazione. `parent` = handle (FPDF_PAGE alla radice o
-    # FPDF_PAGEOBJECT per i form xobjects). `page_object: true` se parent è un
-    # form xobject.
+    # Iterates the objects of a page or of a Form XObject, recursively
+    # applying the transformation matrix. `parent` = handle (FPDF_PAGE at the
+    # root or FPDF_PAGEOBJECT for form xobjects). `page_object: true` if
+    # parent is a form xobject.
     def collect_line_segments(parent, ctm, rotation_ctx, include_curves, out, page_object:)
       n = if page_object
             Raw.FPDFFormObj_CountObjects(parent)
@@ -992,7 +992,7 @@ module Rpdfium
         when Raw::PAGEOBJ_PATH
           extract_path_segments(obj, ctm, rotation_ctx, include_curves, out)
         when Raw::PAGEOBJ_FORM
-          # Discendi nel form xobject componendo la sua matrice col CTM
+          # Descend into the form xobject composing its matrix with the CTM
           child_ctm = compose_matrix(ctm, read_object_matrix(obj))
           collect_line_segments(obj, child_ctm, rotation_ctx, include_curves, out,
                                 page_object: true)
@@ -1052,11 +1052,11 @@ module Rpdfium
       end
     end
 
-    # FPDFPageObj_GetIsActive: ritorna true se il page object è marcato
-    # attivo (visibile). Su PDF senza Optional Content, è always-true; su
-    # PDF con layer disabilitati, alcuni obj possono essere inactive.
-    # Fallback: se la binding non c'è o fallisce, consideriamo attivo
-    # (comportamento equivalente alla versione pre-0.3.6).
+    # FPDFPageObj_GetIsActive: returns true if the page object is marked
+    # active (visible). On PDFs without Optional Content it is always-true;
+    # on PDFs with disabled layers, some objs may be inactive.
+    # Fallback: if the binding is missing or fails, we consider it active
+    # (behavior equivalent to the pre-0.3.6 version).
     def object_active?(obj)
       active_buf = FFI::MemoryPointer.new(:int)
       return true if Raw.FPDFPageObj_GetIsActive(obj, active_buf) == 0
@@ -1066,9 +1066,8 @@ module Rpdfium
       true
     end
 
-    # FPDFPageObj_GetDashCount: numero di elementi del dash array. 0 =
-    # linea continua, > 0 = linea tratteggiata (con N elementi
-    # alternati on/off).
+    # FPDFPageObj_GetDashCount: number of elements in the dash array. 0 =
+    # solid line, > 0 = dashed line (with N elements alternating on/off).
     def read_dash_count(obj)
       Raw.FPDFPageObj_GetDashCount(obj)
     rescue Rpdfium::LoadError
@@ -1077,7 +1076,7 @@ module Rpdfium
 
     public
 
-    # Linee orizzontali: dy ~ 0 entro tolleranza
+    # Horizontal lines: dy ~ 0 within tolerance
     def horizontal_lines(tolerance: 0.5)
       line_segments.select { |s| (s[:y0] - s[:y1]).abs <= tolerance }
                    .map { |s| { y: (s[:y0] + s[:y1]) / 2.0,
@@ -1086,7 +1085,7 @@ module Rpdfium
                                 stroke_width: s[:stroke_width] } }
     end
 
-    # Linee verticali: dx ~ 0 entro tolleranza
+    # Vertical lines: dx ~ 0 within tolerance
     def vertical_lines(tolerance: 0.5)
       line_segments.select { |s| (s[:x0] - s[:x1]).abs <= tolerance }
                    .map { |s| { x: (s[:x0] + s[:x1]) / 2.0,
@@ -1095,8 +1094,8 @@ module Rpdfium
                                 stroke_width: s[:stroke_width] } }
     end
 
-    # Compat con la prima versione: bbox dei path objects (utile per
-    # rectangles disegnati come bordi sottili).
+    # Compat with the first version: bbox of the path objects (useful for
+    # rectangles drawn as thin borders).
     def vector_rects
       n = Raw.FPDFPage_CountObjects(@state[:handle])
       h = height
@@ -1121,20 +1120,20 @@ module Rpdfium
 
     # ===== Marked Content (PDF tagged) =====
 
-    # Itera tutti i marked content del page (operatori BDC/BMC del content
-    # stream PDF) raggruppando i page object per il loro mcid (Marked
-    # Content ID). Utile per PDF "tagged" (PDF/UA, esport da Word/InDesign):
-    # un mcid ≥ 0 identifica un'unità semantica (paragrafo, span, figura),
-    # e tutti gli oggetti con lo stesso mcid appartengono allo stesso
-    # tag struttura.
+    # Iterates all the marked content of the page (BDC/BMC operators of the
+    # PDF content stream) grouping the page objects by their mcid (Marked
+    # Content ID). Useful for "tagged" PDFs (PDF/UA, exports from
+    # Word/InDesign): an mcid ≥ 0 identifies a semantic unit (paragraph,
+    # span, figure), and all the objects with the same mcid belong to the
+    # same structure tag.
     #
-    # Ritorna un Hash { mcid (Integer) => Array<page_object_handle> }.
-    # mcid -1 (i page object senza marked content) viene OMESSO.
+    # Returns a Hash { mcid (Integer) => Array<page_object_handle> }.
+    # mcid -1 (the page objects without marked content) is OMITTED.
     #
-    # Su PDF non tagged (es. la maggior parte dei PDF da gestionali
-    # italiani) l'Hash è vuoto. Su PDF tagged è la fonte di verità per
-    # raggruppare semanticamente char/parole — più affidabile di qualsiasi
-    # euristica geometrica.
+    # On non-tagged PDFs (e.g. most PDFs from Italian business software)
+    # the Hash is empty. On tagged PDFs it is the source of truth for
+    # semantically grouping chars/words — more reliable than any geometric
+    # heuristic.
     def marked_content_regions
       out = Hash.new { |h, k| h[k] = [] }
       walk_page_objects do |obj, _ctm|
@@ -1144,9 +1143,9 @@ module Rpdfium
       out
     end
 
-    # Itera tutti i marks (BMC/BDC operators) con i loro nomi e parametri.
-    # Ritorna Array<Hash> con { obj_handle, mark_name, params }.
-    # Per PDF tagged, i mark_name comuni sono: "P" (paragraph),
+    # Iterates all the marks (BMC/BDC operators) with their names and
+    # parameters. Returns Array<Hash> with { obj_handle, mark_name, params }.
+    # For tagged PDFs, the common mark_names are: "P" (paragraph),
     # "Span", "Artifact", "Figure", "TR" (table row), "TD" (table cell).
     def marked_content_inventory
       out = []
@@ -1168,15 +1167,15 @@ module Rpdfium
 
     # ===== Links (annotation links + hit-test posizionale) =====
 
-    # Hit-test: ritorna il link annotation che contiene il punto (x, y)
-    # in coordinate top-down della pagina. Restituisce un'istanza di
-    # Annotation o nil.
+    # Hit-test: returns the link annotation that contains the point (x, y)
+    # in the page's top-down coordinates. Returns an Annotation instance
+    # or nil.
     #
-    # Più efficiente di iterare `links` quando si parte da una coordinata
-    # (es. mapping click sul rendering → URL del link). Pdfplumber non
-    # ha equivalente diretto.
+    # More efficient than iterating `links` when starting from a coordinate
+    # (e.g. mapping a click on the rendering → the link URL). pdfplumber has
+    # no direct equivalent.
     def link_at(x, y)
-      # PDFium usa coord bottom-up; converto
+      # PDFium uses bottom-up coords; convert
       pdf_y = height - y
       link_handle = Raw.FPDFLink_GetLinkAtPoint(@state[:handle],
                                                  x.to_f, pdf_y.to_f)
@@ -1185,9 +1184,9 @@ module Rpdfium
       annot_handle = Raw.FPDFLink_GetAnnot(@state[:handle], link_handle)
       return nil if annot_handle.null?
 
-      # Annotation richiede un index nel page; non lo abbiamo direttamente
-      # qui. Iteriamo le annotation della pagina e troviamo quella col
-      # rect più vicino. Per la maggior parte dei PDF è O(piccolo).
+      # Annotation requires an index in the page; we do not have it directly
+      # here. We iterate the page's annotations and find the one with the
+      # closest rect. For most PDFs this is O(small).
       annotations.find { |a| a.subtype == :link && annotation_contains?(a, x, y) }
     end
 
@@ -1206,19 +1205,19 @@ module Rpdfium
       out
     end
 
-    # ===== Annotazioni =====
+    # ===== Annotations =====
 
     def annotations
       n = Raw.FPDFPage_GetAnnotCount(@state[:handle])
       Array.new(n) { |i| Annotation.new(self, i) }
     end
 
-    # Solo annotazioni link (cliccabili, esterne o interne)
+    # Link annotations only (clickable, external or internal)
     def links
       annotations.select { |a| a.subtype == :link }
     end
 
-    # Solo widget di form
+    # Form widgets only
     def form_fields
       return [] unless @document.has_forms?
 
@@ -1228,25 +1227,25 @@ module Rpdfium
 
     # ===== Struct Tree (PDF tagged) =====
 
-    # Struct tree della pagina (PDF/UA / Tagged PDF). Ritorna nil se la
-    # pagina non è tagged. Per PDF da Word/LibreOffice/InDesign export
-    # con accessibility tags attivati, espone la struttura logica
-    # (Document → P, H1, Table, TR, TH, TD, Figure, ecc.).
+    # Struct tree of the page (PDF/UA / Tagged PDF). Returns nil if the
+    # page is not tagged. For PDFs from Word/LibreOffice/InDesign exports
+    # with accessibility tags enabled, it exposes the logical structure
+    # (Document → P, H1, Table, TR, TH, TD, Figure, etc.).
     #
-    # Modalità d'uso:
+    # Usage modes:
     #
-    #   # Lifecycle automatico (RAII via finalizer):
+    #   # Automatic lifecycle (RAII via finalizer):
     #   tree = page.struct_tree
     #   tree&.walk { |el| puts el.type }
     #
-    #   # Lifecycle deterministico (close al fine blocco):
+    #   # Deterministic lifecycle (close at end of block):
     #   page.struct_tree do |tree|
     #     tree.tables.each { |t| ... }
     #   end
     #
-    # Su PDF non tagged ritorna nil. Su PDF "tagged ma vuoto" (es. CR
-    # Banca d'Italia, StructTreeRoot presente ma con element placeholder),
-    # ritorna un Tree con `Tree#empty? == true`.
+    # On non-tagged PDFs it returns nil. On "tagged but empty" PDFs (e.g. CR
+    # Banca d'Italia, StructTreeRoot present but with placeholder elements),
+    # it returns a Tree with `Tree#empty? == true`.
     def struct_tree
       tree = Structure::Tree.for_page(self)
       if block_given?
@@ -1262,9 +1261,10 @@ module Rpdfium
 
     # ===== Rendering =====
 
-    # Render a bitmap. `output` può essere :rgba (default), :bgra, :gray.
-    # Ritorna [w, h, bytes] dove bytes è una stringa binaria.
-    # Se include_forms è true e il documento ha forms, sovrappone i widget.
+    # Render to a bitmap. `output` can be :rgba (default), :bgra, :gray.
+    # Returns [w, h, bytes] where bytes is a binary string.
+    # If include_forms is true and the document has forms, it overlays the
+    # widgets.
     def render(scale: 2.0, rotate: 0, output: :rgba,
                include_annotations: false, include_forms: false,
                background: 0xFFFFFFFF)
@@ -1288,8 +1288,8 @@ module Rpdfium
         end
         stride = Raw.FPDFBitmap_GetStride(bitmap)
         buf    = Raw.FPDFBitmap_GetBuffer(bitmap)
-        # Lo stride può eccedere w*bpp per padding di allineamento.
-        # In BGRA è quasi sempre w*4, ma rispettiamolo per sicurezza.
+        # The stride may exceed w*bpp due to alignment padding.
+        # In BGRA it is almost always w*4, but we respect it for safety.
         bytes  = buf.read_bytes(stride * h)
         [w, h, bytes, stride]
       ensure
@@ -1297,7 +1297,7 @@ module Rpdfium
       end
     end
 
-    # Rendering diretto a PNG file. Usa Rpdfium::IO::PNG (puro Ruby, zero dep).
+    # Direct rendering to a PNG file. Uses Rpdfium::IO::PNG (pure Ruby, zero deps).
     def render_to_png(path, **opts)
       w, h, bytes, stride = render(output: :rgba, **opts)
       Rpdfium::IO::PNG.write(path, w, h, bytes, stride: stride)
@@ -1328,7 +1328,7 @@ module Rpdfium
 
     private
 
-    # Match helper per il parametro `font:` di chars_where/lines.
+    # Match helper for the `font:` parameter of chars_where/lines.
     def font_matches?(actual_font, pattern)
       return false if actual_font.nil?
 
@@ -1340,9 +1340,9 @@ module Rpdfium
       end
     end
 
-    # Match helper per parametri numerici (`height:`, `weight:`).
-    # Accetta singolo valore, Range, o Array<Numeric>. Per singolo valore
-    # numeric usa tolleranza 0.05 (utile per height in punti).
+    # Match helper for numeric parameters (`height:`, `weight:`).
+    # Accepts a single value, Range, or Array<Numeric>. For a single
+    # numeric value it uses a 0.05 tolerance (useful for height in points).
     def range_matches?(actual, spec)
       return false if actual.nil?
 
@@ -1354,13 +1354,13 @@ module Rpdfium
       end
     end
 
-    # Converte un box PDFium {left, bottom, right, top} in coord bottom-up
-    # alla tuple top-down [x0, top, x1, bottom] usata dal resto della
-    # libreria. Ritorna nil se il box è nil (box assente sul PDF).
-    # Itera tutti i page object della pagina ricorsivamente (discendendo
-    # nei Form XObjects), passando al block ogni (obj, ctm_corrente).
-    # Stessa logica di walk di collect_line_segments ma astratta — utile
-    # per altre operazioni a livello di obj (marked content, etc).
+    # Converts a PDFium box {left, bottom, right, top} in bottom-up coords
+    # to the top-down tuple [x0, top, x1, bottom] used by the rest of the
+    # library. Returns nil if the box is nil (box absent on the PDF).
+    # Iterates all the page objects of the page recursively (descending
+    # into Form XObjects), passing each (obj, current_ctm) to the block.
+    # Same walk logic as collect_line_segments but abstracted — useful for
+    # other obj-level operations (marked content, etc).
     def walk_page_objects(handle = @state[:handle], ctm = identity_matrix,
                           is_form: false, &block)
       n = is_form ? Raw.FPDFFormObj_CountObjects(handle) : Raw.FPDFPage_CountObjects(handle)
@@ -1399,9 +1399,9 @@ module Rpdfium
       needed = out_len.read_ulong
       return nil if needed < 2
 
-      # Clamp: se needed eccede il buffer, leggo solo quanto allocato (e
-      # mi pace che la stringa sia troncata: il caso è patologico). Senza
-      # clamp → IndexError su mark name eccezionalmente lunghi.
+      # Clamp: if needed exceeds the buffer, read only what was allocated
+      # (and accept that the string is truncated: the case is pathological).
+      # Without the clamp → IndexError on exceptionally long mark names.
       payload_bytes = [needed - 2, buf_bytes - 2].min
       return nil if payload_bytes <= 0
 
@@ -1418,7 +1418,7 @@ module Rpdfium
         key = read_mark_param_key(mark, pi)
         next if key.nil? || key.empty?
 
-        # Tipo del valore: 0=Null, 1=Int, 2=String, 3=Blob, 4=Dict (ignorato)
+        # Value type: 0=Null, 1=Int, 2=String, 3=Blob, 4=Dict (ignored)
         type = Raw.FPDFPageObjMark_GetParamValueType(mark, key)
         params[key] = case type
                        when 1 then read_mark_param_int(mark, key)
@@ -1506,10 +1506,10 @@ module Rpdfium
       buf.read_float
     end
 
-    # Costruisce un segmento dalla coppia di endpoint nello spazio raw
-    # PDFium (bottom-up, pre-rotazione). Applica la rotazione della pagina
-    # per restituire coord top-down nel sistema post-rotation, coerente
-    # con il sistema usato da `chars`.
+    # Builds a segment from the pair of endpoints in the raw PDFium space
+    # (bottom-up, pre-rotation). Applies the page rotation to return
+    # top-down coords in the post-rotation system, consistent with the
+    # system used by `chars`.
     def build_segment(x0, y0, x1, y1, rotation_ctx, stroke_width, dashed: false)
       r = rotation_ctx[:rotation]
       raw_w = rotation_ctx[:raw_w]
@@ -1526,8 +1526,8 @@ module Rpdfium
       }
     end
 
-    # Trasforma un singolo punto (x, y) dal sistema raw PDFium (bottom-up)
-    # al sistema top-down post-rotation della pagina.
+    # Transforms a single point (x, y) from the raw PDFium system (bottom-up)
+    # to the page's top-down post-rotation system.
     def apply_page_rotation_to_point(rotation, raw_w, raw_h, x, y)
       case rotation
       when 0, nil
@@ -1543,7 +1543,7 @@ module Rpdfium
       end
     end
 
-    # Raggruppa elementi consecutivi se un blocco li considera equivalenti.
+    # Groups consecutive elements if a block considers them equivalent.
     def group_consecutive(arr)
       groups = []
       current = []
@@ -1583,7 +1583,7 @@ module Rpdfium
     end
   end
 
-  # Wrapper per FPDF_TEXTPAGE
+  # Wrapper for FPDF_TEXTPAGE
   class TextPage
     def initialize(page)
       handle = Raw.FPDFText_LoadPage(page.handle)

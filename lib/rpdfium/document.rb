@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 module Rpdfium
-  # Wrapper di livello documento. Espone:
-  # - apertura da path / IO / bytes / pagina by index
-  # - metadata (Title, Author, ecc.)
+  # Document-level wrapper. Exposes:
+  # - opening from path / IO / bytes / page by index
+  # - metadata (Title, Author, etc.)
   # - permissions
   # - outline (bookmarks)
   # - attachments
@@ -39,10 +39,11 @@ module Rpdfium
 
         raise LoadError, "Failed to load PDF: #{msg}"
       end
-      # Stato condiviso tra istanza e finalizer. Wrappato in Hash mutabile
-      # perché la closure del finalizer e il close() esplicito devono vedere
-      # lo stesso :closed flag — altrimenti chi arriva secondo richiama
-      # FPDF_CloseDocument su un handle già liberato e PDFium segfaulta.
+      # State shared between the instance and the finalizer. Wrapped in a
+      # mutable Hash because the finalizer closure and the explicit
+      # close() must see the same :closed flag — otherwise whichever
+      # arrives second calls FPDF_CloseDocument on an already-freed
+      # handle and PDFium segfaults.
       @state = {
         handle: handle,
         retain_buffer: retain_buffer,
@@ -50,11 +51,11 @@ module Rpdfium
       }
       @form_env = nil
       @page_cache = {}
-      # IMPORTANTE: il finalizer cattura @state (Hash), NON self. Catturare
-      # self impedirebbe al GC di raccogliere il Document. Inoltre il
-      # finalizer NON tocca @page_cache: le Page hanno il loro finalizer
-      # individuale, e l'ordine di esecuzione tra finalizer è non
-      # deterministico in Ruby.
+      # IMPORTANT: the finalizer captures @state (Hash), NOT self.
+      # Capturing self would prevent the GC from collecting the Document.
+      # Moreover the finalizer does NOT touch @page_cache: Pages have
+      # their own individual finalizer, and the execution order among
+      # finalizers is non-deterministic in Ruby.
       ObjectSpace.define_finalizer(self, self.class.finalizer(@state))
     end
 
@@ -86,8 +87,9 @@ module Rpdfium
       ensure_open!
       raise PageError, "Page index #{index} out of range" unless (0...page_count).cover?(index)
 
-      # Le pagine sono cacheable: ricaricarle è costoso e gli oggetti sono
-      # immutabili dal punto di vista applicativo (in modalità read-only).
+      # Pages are cacheable: reloading them is expensive and the objects
+      # are immutable from the application's point of view (in read-only
+      # mode).
       @page_cache[index] ||= Page.new(self, index)
     end
     alias [] page
@@ -116,11 +118,11 @@ module Rpdfium
       return nil if Raw.FPDF_GetFileVersion(@state[:handle], buf) == 0
 
       v = buf.read_int
-      # PDFium ritorna 14 → 1.4, 17 → 1.7
+      # PDFium returns 14 → 1.4, 17 → 1.7
       "#{v / 10}.#{v % 10}"
     end
 
-    # Permission bits secondo PDF spec (Table 22 §7.6.3.2)
+    # Permission bits according to the PDF spec (Table 22 §7.6.3.2)
     PERMISSIONS = {
       print:       1 << 2,
       modify:      1 << 3,
@@ -154,9 +156,9 @@ module Rpdfium
       form_type != :none
     end
 
-    # Lazy form environment. Necessario per:
-    # - leggere FormFieldType/Value/Name su widget annotations
-    # - renderizzare i form fields sopra la pagina (FFLDraw)
+    # Lazy form environment. Required to:
+    # - read FormFieldType/Value/Name on widget annotations
+    # - render the form fields over the page (FFLDraw)
     def form_env
       @form_env ||= Form::Environment.new(self) if has_forms?
     end
@@ -179,7 +181,7 @@ module Rpdfium
     def close
       return if @state[:closed]
 
-      # Ordine: chiudi prima form env e pagine cached, poi documento.
+      # Order: close form env and cached pages first, then the document.
       @form_env&.close
       @page_cache.each_value(&:close)
       @page_cache.clear
@@ -216,8 +218,8 @@ module Rpdfium
     end
 
     def load_from_bytes(bytes, password)
-      # CRITICO: PDFium NON copia i bytes — li referenzia. Dobbiamo tenere
-      # vivo il buffer per tutta la vita del documento.
+      # CRITICAL: PDFium does NOT copy the bytes — it references them. We
+      # must keep the buffer alive for the entire life of the document.
       buf = FFI::MemoryPointer.new(:uchar, bytes.bytesize)
       buf.put_bytes(0, bytes)
       [Raw.FPDF_LoadMemDocument64(buf, bytes.bytesize, password), buf]

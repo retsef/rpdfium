@@ -2,30 +2,30 @@
 
 module Rpdfium
   module Util
-    # Fonde word adiacenti sulla stessa riga in un'unica word con bbox
-    # aggregata e text concatenato.
+    # Merges adjacent words on the same row into a single word with an
+    # aggregated bbox and concatenated text.
     #
-    # Tre strategie disponibili come metodi separati:
+    # Three strategies are available as separate methods:
     #
-    # - `merge_by_proximity` — fonde tutte le word adiacenti che soddisfano
-    #   il criterio di vicinanza. Strategia base.
+    # - `merge_by_proximity` — merges all adjacent words that satisfy the
+    #   proximity criterion. Base strategy.
     #
-    # - `merge_by_label` — fonde solo word che condividono la stessa "label"
-    #   (chiave esterna calcolata dal chiamante). Utile per preservare la
-    #   semantica quando label diverse cadono sulla stessa riga (es. flag
-    #   in colonne adiacenti).
+    # - `merge_by_label` — merges only words that share the same "label"
+    #   (external key computed by the caller). Useful for preserving
+    #   semantics when different labels fall on the same row (e.g. flags
+    #   in adjacent columns).
     #
-    # - `merge_unlabeled` — fonde solo word "orfane" (label nil) lasciando
-    #   intatte quelle con label. Inverso di merge_by_label.
+    # - `merge_unlabeled` — merges only "orphan" words (label nil), leaving
+    #   labeled ones intact. Inverse of merge_by_label.
     #
-    # Tutte ritornano una nuova lista di word, con quelle fuse rappresentate
-    # come hash `{ text:, x0:, x1:, top:, bottom: }`.
+    # All return a new list of words, with merged ones represented as the
+    # hash `{ text:, x0:, x1:, top:, bottom: }`.
     #
-    # @example merge per proximity
+    # @example merge by proximity
     #   merger = Rpdfium::Util::WordMerger.new(x_gap: 20.0, y_tol: 3.0)
     #   merged = merger.merge_by_proximity(words)
     #
-    # @example merge per label, con label fornita dal chiamante
+    # @example merge by label, with the label provided by the caller
     #   labels_by_word = words.each_with_object({}) { |w, h| h[w] = compute_label(w) }
     #   merged = merger.merge_by_label(words, labels_by_word)
     class WordMerger
@@ -37,21 +37,22 @@ module Rpdfium
         @y_tol = y_tol
       end
 
-      # Fonde tutte le word adiacenti (stessa riga + gap orizzontale ≤ x_gap).
+      # Merges all adjacent words (same row + horizontal gap ≤ x_gap).
       def merge_by_proximity(words)
         merge_groups(words) { |a, b| true }
       end
 
-      # Fonde solo word con la stessa label.
-      # @param labels_by_word [Hash] mapping word → label (qualunque tipo).
-      #   Word con stessa label vengono fuse, word con label diverse no.
+      # Merges only words with the same label.
+      # @param labels_by_word [Hash] mapping word → label (any type).
+      #   Words with the same label are merged; words with different
+      #   labels are not.
       def merge_by_label(words, labels_by_word)
         merge_groups(words) do |a, b|
           labels_by_word[a] == labels_by_word[b]
         end
       end
 
-      # Fonde solo word con label nil (orfane).
+      # Merges only words with a nil label (orphans).
       def merge_unlabeled(words, labels_by_word)
         merge_groups(words) do |a, b|
           labels_by_word[a].nil? && labels_by_word[b].nil?
@@ -60,10 +61,10 @@ module Rpdfium
 
       private
 
-      # Algoritmo generico di merging: scorre i word ordinati per (top, x0)
-      # e li raggruppa quando soddisfano sia il criterio geometrico
-      # (stessa riga e gap orizzontale stretto) che il predicato `yield`
-      # fornito dal chiamante.
+      # Generic merging algorithm: iterates over the words sorted by
+      # (top, x0) and groups them when they satisfy both the geometric
+      # criterion (same row and narrow horizontal gap) and the `yield`
+      # predicate provided by the caller.
       def merge_groups(words)
         return [] if words.empty?
 

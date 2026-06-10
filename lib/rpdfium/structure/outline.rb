@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Rpdfium
-  # Albero di bookmark (outline) del documento. Costruito ricorsivamente.
+  # Document bookmark (outline) tree. Built recursively.
   class Outline
     attr_reader :title, :page_index, :children
 
@@ -32,7 +32,7 @@ module Rpdfium
       result
     end
 
-    # Iteratore flat preorder: utile per generare un sommario lineare.
+    # Flat preorder iterator: useful for generating a linear table of contents.
     def self.flatten(outline_tree, depth = 0, &block)
       outline_tree.each do |item|
         block.call(item, depth)

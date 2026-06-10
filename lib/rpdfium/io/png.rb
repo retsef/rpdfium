@@ -4,12 +4,12 @@ require "zlib"
 
 module Rpdfium
   module IO
-    # PNG writer minimale, puro Ruby, zero dipendenze esterne.
-    # Supporta solo RGBA 8bpc (color type 6) — il formato che PDFium produce
-    # quando rendi con FPDF_REVERSE_BYTE_ORDER.
+    # Minimal PNG writer, pure Ruby, zero external dependencies.
+    # Supports only RGBA 8bpc (color type 6) — the format PDFium produces
+    # when rendering with FPDF_REVERSE_BYTE_ORDER.
     #
-    # Riferimento: PNG spec (RFC 2083). Nessun compromesso sulla validità:
-    # genera CRC32 corretti e usa deflate via zlib stdlib.
+    # Reference: PNG spec (RFC 2083). No compromise on validity:
+    # generates correct CRC32 values and uses deflate via the zlib stdlib.
     module PNG
       SIGNATURE = "\x89PNG\r\n\x1a\n".b
       COLOR_RGBA = 6
@@ -34,10 +34,10 @@ module Rpdfium
       end
 
       def write_idat(io, width, height, rgba, stride)
-        # PNG richiede un byte di "filter type" all'inizio di ogni riga.
-        # 0 = None (nessun filtro). Funziona ma comprime peggio.
-        # Per semplicità usiamo None — output 1.5-2x più grande del minimo
-        # ottimo, ma è una scelta esplicita di tradeoff complessità/zero-dep.
+        # PNG requires a "filter type" byte at the start of each row.
+        # 0 = None (no filter). It works but compresses worse.
+        # For simplicity we use None — output 1.5-2x larger than the optimal
+        # minimum, but it is an explicit complexity/zero-dep tradeoff choice.
         row_bytes = width * 4
         scanlines = String.new(capacity: (row_bytes + 1) * height,
                                 encoding: Encoding::ASCII_8BIT)

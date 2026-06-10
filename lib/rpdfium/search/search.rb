@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
 module Rpdfium
-  # Ricerca testuale interna alla pagina, basata su FPDFText_Find*.
-  # Mantiene lo stato (cursor) e supporta forward/backward.
+  # Text search within the page, based on FPDFText_Find*.
+  # Keeps the state (cursor) and supports forward/backward.
   #
-  # Esempio:
+  # Example:
   #   page.search("totale").each_match { |m| p m[:bbox], m[:text] }
   class Search
     include Enumerable
@@ -43,8 +43,8 @@ module Rpdfium
       @state[:handle]
     end
 
-    # Itera tutte le occorrenze in avanti. Ritorna hash con :char_index, :length,
-    # :text, :rects (array di bbox top-down: una per riga di testo).
+    # Iterates over all forward occurrences. Returns a hash with :char_index, :length,
+    # :text, :rects (an array of top-down bboxes: one per text line).
     def each_match
       return enum_for(:each_match) unless block_given?
 

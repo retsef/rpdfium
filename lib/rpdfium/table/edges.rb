@@ -2,25 +2,26 @@
 
 module Rpdfium
   module Table
-    # Operazioni su edges (segmenti orizzontali/verticali) usate dal
-    # TableFinder. Mappa diretta su `pdfplumber/table.py`.
+    # Operations on edges (horizontal/vertical segments) used by the
+    # TableFinder. A direct mapping onto `pdfplumber/table.py`.
     #
-    # Convenzioni interne (allineate a pdfplumber):
-    #   - Ogni edge è un Hash con :orientation ("v" | "h"),
-    #     :x0, :x1, :top, :bottom (in coordinate top-down).
-    #   - Edge orizzontale: top == bottom, x0 < x1.
-    #   - Edge verticale:   x0 == x1, top < bottom.
+    # Internal conventions (aligned with pdfplumber):
+    #   - Each edge is a Hash with :orientation ("v" | "h"),
+    #     :x0, :x1, :top, :bottom (in top-down coordinates).
+    #   - Horizontal edge: top == bottom, x0 < x1.
+    #   - Vertical edge:    x0 == x1, top < bottom.
     #
-    # Le edges possono provenire da:
-    #   - linee vettoriali del PDF (path segments)
-    #   - rettangoli (decomposti in 4 lati)
-    #   - line "implicite" dedotte dall'allineamento di words (strategia :text)
-    #   - line specificate dall'utente (strategia :explicit)
+    # The edges can come from:
+    #   - vector lines of the PDF (path segments)
+    #   - rectangles (decomposed into 4 sides)
+    #   - "implicit" lines inferred from word alignment (:text strategy)
+    #   - lines specified by the user (:explicit strategy)
     module Edges
       module_function
 
-      # Snap: cluster di edges quasi-collineari → coordinata media comune.
-      # Per orizzontali snappa la `top` (== `bottom`); per verticali la `x0`.
+      # Snap: cluster of near-collinear edges → common average coordinate.
+      # For horizontals it snaps the `top` (== `bottom`); for verticals the
+      # `x0`.
       def snap_edges(edges, x_tolerance: 3.0, y_tolerance: 3.0)
         v_edges, h_edges = edges.partition { |e| e[:orientation] == "v" }
 
@@ -42,13 +43,13 @@ module Rpdfium
         end
       end
 
-      # Join: dato un gruppo di edges sulla stessa retta infinita (stessa top
-      # per orizzontali, stessa x0 per verticali), fonde quelli i cui estremi
-      # sono entro `tolerance`.
+      # Join: given a group of edges on the same infinite line (same top
+      # for horizontals, same x0 for verticals), merges those whose
+      # endpoints are within `tolerance`.
       #
-      # Match esatto del comportamento di pdfplumber.join_edge_group: scorre
-      # sorted per minprop, estende il "current" se overlap/contiguità entro
-      # tolerance, altrimenti apre nuovo current.
+      # Exact match of pdfplumber.join_edge_group behavior: iterates sorted
+      # by minprop, extends the "current" if overlap/contiguity is within
+      # tolerance, otherwise opens a new current.
       def join_edge_group(edges, orientation, tolerance: 3.0)
         return [] if edges.empty?
 
@@ -68,7 +69,7 @@ module Rpdfium
         joined
       end
 
-      # Pipeline completa: snap + join. Fedele a pdfplumber.merge_edges.
+      # Complete pipeline: snap + join. Faithful to pdfplumber.merge_edges.
       def merge_edges(edges,
                       snap_x_tolerance: 3.0, snap_y_tolerance: 3.0,
                       join_x_tolerance: 3.0, join_y_tolerance: 3.0)
@@ -78,7 +79,7 @@ module Rpdfium
                               y_tolerance: snap_y_tolerance)
         end
 
-        # Raggruppa per (orientation, "valore della retta")
+        # Group by (orientation, "line value")
         # h → top, v → x0
         groups = edges.group_by do |e|
           e[:orientation] == "h" ? ["h", e[:top]] : ["v", e[:x0]]
@@ -89,7 +90,7 @@ module Rpdfium
         end
       end
 
-      # Filtra edges troppo corti.
+      # Filters out edges that are too short.
       def filter_edges(edges, orientation: nil, min_length: 1.0)
         edges.reject do |e|
           next true if orientation && e[:orientation] != orientation
@@ -110,11 +111,11 @@ module Rpdfium
       DEFAULT_MIN_WORDS_VERTICAL = 3
       DEFAULT_MIN_WORDS_HORIZONTAL = 1
 
-      # Per ogni cluster di word allineate "in alto" (stessa top, entro tol=1)
-      # con almeno `word_threshold` membri, emette DUE edges orizzontali (top
-      # e bottom della bbox di quel cluster). Avere il bottom oltre al top è
-      # critico: garantisce che l'ultima riga di ogni tabella abbia un edge
-      # orizzontale di chiusura.
+      # For each cluster of words aligned "at the top" (same top, within
+      # tol=1) with at least `word_threshold` members, it emits TWO
+      # horizontal edges (top and bottom of that cluster's bbox). Having
+      # the bottom in addition to the top is critical: it guarantees that
+      # the last row of each table has a closing horizontal edge.
       def words_to_edges_h(words, word_threshold: DEFAULT_MIN_WORDS_HORIZONTAL)
         by_top = Util::Cluster.cluster_objects(words, :top, tolerance: 1.0)
         large = by_top.select { |g| g.size >= word_threshold }
@@ -132,14 +133,14 @@ module Rpdfium
         end
       end
 
-      # Tre cluster di word per x: x0, x1, centerpoint. Cluster con almeno
-      # `word_threshold` membri sono candidati colonna. Le bbox di ciascun
-      # cluster vengono "condensate": se una bbox si sovrappone a un'altra
-      # già selezionata (più popolata), viene scartata.
+      # Three clusters of words by x: x0, x1, centerpoint. Clusters with at
+      # least `word_threshold` members are column candidates. The bboxes of
+      # each cluster are "condensed": if a bbox overlaps another already
+      # selected (more populated) one, it is discarded.
       #
-      # Per ogni bbox condensata emetto un edge verticale al suo x0 (left
-      # della colonna). In aggiunta, emetto un edge "right" finale al max
-      # x1 di tutte le bbox: chiude visivamente la tabella sulla destra.
+      # For each condensed bbox I emit a vertical edge at its x0 (left of
+      # the column). In addition, I emit a final "right" edge at the max x1
+      # of all the bboxes: it visually closes the table on the right.
       def words_to_edges_v(words, word_threshold: DEFAULT_MIN_WORDS_VERTICAL)
         by_x0 = Util::Cluster.cluster_objects(words, :x0, tolerance: 1.0)
         by_x1 = Util::Cluster.cluster_objects(words, :x1, tolerance: 1.0)
@@ -147,7 +148,7 @@ module Rpdfium
         by_center = Util::Cluster.cluster_objects(words, center_fn, tolerance: 1.0)
 
         clusters = by_x0 + by_x1 + by_center
-        # Più popolati prima
+        # More populated first
         sorted = clusters.sort_by { |c| -c.size }
         large = sorted.select { |c| c.size >= word_threshold }
         bboxes = large.map { |c| Util::Cluster.objects_to_bbox(c) }
@@ -157,7 +158,7 @@ module Rpdfium
         end
         return [] if condensed_bboxes.empty?
 
-        # Sort left-to-right per emettere edges in ordine geometrico.
+        # Sort left-to-right to emit edges in geometric order.
         condensed_rects = condensed_bboxes.map do |b|
           { x0: b[0], top: b[1], x1: b[2], bottom: b[3] }
         end.sort_by { |r| r[:x0] }
@@ -170,7 +171,7 @@ module Rpdfium
           acc[2] = r[:bottom] if r[:bottom] > acc[2]
         end
 
-        # Edge "left" di ogni colonna + un edge finale "right".
+        # "left" edge of each column + a final "right" edge.
         left_edges = condensed_rects.map do |r|
           { x0: r[:x0], x1: r[:x0], top: min_top, bottom: max_bottom, orientation: "v" }
         end
@@ -179,18 +180,19 @@ module Rpdfium
       end
 
       # ------------------------------------------------------------------
-      # intersezioni edges
+      # edge intersections
       # ------------------------------------------------------------------
 
-      # Per ogni coppia (h, v) che si interseca entro tolerance, registra
-      # un'intersezione `(v.x0, h.top)` con i puntatori agli edge sorgenti.
-      # Il valore in `intersections[(x, y)] = { v: [...], h: [...] }` permette
-      # poi al cell-builder di verificare "edge connect".
+      # For each (h, v) pair that intersects within tolerance, it records
+      # an intersection `(v.x0, h.top)` with pointers to the source edges.
+      # The value in `intersections[(x, y)] = { v: [...], h: [...] }` then
+      # allows the cell-builder to verify "edge connect".
       #
-      # Ottimizzazione rispetto al loop naïve O(|v|×|h|): sorted_h è ordinato
-      # per top; per ogni edge verticale si usa bsearch per trovare il primo h
-      # candidato e si esce appena h[:top] supera v[:bottom] + y_tolerance,
-      # riducendo le iterazioni al solo sottoinsieme verticalmente rilevante.
+      # Optimization over the naïve O(|v|×|h|) loop: sorted_h is ordered by
+      # top; for each vertical edge a bsearch is used to find the first
+      # candidate h and the loop exits as soon as h[:top] exceeds
+      # v[:bottom] + y_tolerance, reducing the iterations to only the
+      # vertically relevant subset.
       def edges_to_intersections(edges, x_tolerance: 1.0, y_tolerance: 1.0)
         v_edges, h_edges = edges.partition { |e| e[:orientation] == "v" }
         intersections = {}
@@ -202,11 +204,11 @@ module Rpdfium
           v_top_min = v[:top]    - y_tolerance
           v_top_max = v[:bottom] + y_tolerance
 
-          # Salta tutti gli h il cui top è ancora sotto la finestra verticale.
+          # Skip all the h whose top is still below the vertical window.
           start_idx = h_tops.bsearch_index { |t| t >= v_top_min } || sorted_h.size
 
           sorted_h[start_idx..].each do |h|
-            # Gli h rimanenti sono oltre la finestra: esci subito.
+            # The remaining h are beyond the window: exit immediately.
             break if h[:top] > v_top_max
 
             next unless v[:x0] >= h[:x0] - x_tolerance

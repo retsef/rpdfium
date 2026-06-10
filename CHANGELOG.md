@@ -1,164 +1,168 @@
 # Changelog
 
-Tutte le modifiche notevoli a questo progetto.
-Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
+All notable changes to this project are documented in this file.
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+> Entries for versions prior to 0.3.10 are available in the project's
+> Git history.
 
 ## [0.4.1] - 2026-05-26
 
-### Corretto
+### Fixed
 
-- **Caricamento su Linux con `rpdfium-binary`**: `rpdfium.rb` ora esegue
-  `require "rpdfium/binary"` prima di `raw.rb`. In precedenza `ffi_lib`
-  veniva chiamato prima che `Rpdfium::Binary` fosse definito, causando
-  un fallback ai nomi di sistema (`pdfium`, `libpdfium.so`) e un
-  `LoadError` su ambienti senza PDFium installato globalmente.
+- **Loading on Linux with `rpdfium-binary`**: `rpdfium.rb` now executes
+  `require "rpdfium/binary"` before `raw.rb`. Previously `ffi_lib` was
+  invoked before `Rpdfium::Binary` had been defined, causing a fallback
+  to the system library names (`pdfium`, `libpdfium.so`) and a
+  `LoadError` on environments without a globally installed PDFium.
 
-## [0.4.0] - refactor verso primitive componibili
+## [0.4.0] - refactor toward composable primitives
 
 ### ⚠️ Breaking changes
 
-`Page#label_value_pairs` torna a essere una **primitiva minimale**:
-ritorna `Array<Hash>` con pair grezzi senza opzioni di merging
-applicativo. Le opzioni `merge_adjacent:`, `as_hash:`, `boxed_layout:`
-sono **rimosse** (erano logica di dominio incollata sulla primitiva
-di estrazione).
+`Page#label_value_pairs` reverts to being a **minimal primitive**: it
+returns an `Array<Hash>` of raw pairs with no application-level merging
+options. The `merge_adjacent:`, `as_hash:`, and `boxed_layout:` options
+are **removed** (they were domain logic grafted onto the extraction
+primitive).
 
-Per chi usava queste opzioni:
-- `merge_adjacent: :smart` → componi a mano con `Util::WordMerger`
-- `as_hash: true` → converti il risultato nel chiamante
-- `boxed_layout: true` → passa direttamente `x_tolerance: 15.0,
-  inject_spaces: false` + crea `LabelMatcher.new(row_max_dx: 400.0)`
+For users who relied on these options:
 
-Gli **adapter applicativi specifici** per moduli AE (Modello 770,
-Comunicazione IVA) sono ora forniti come **esempi esterni** in
-`examples/adapters/` (vedi sotto), non come parte della gem.
+- `merge_adjacent: :smart` → compose manually with `Util::WordMerger`
+- `as_hash: true` → convert the result in the caller
+- `boxed_layout: true` → pass `x_tolerance: 15.0, inject_spaces: false`
+  directly, and create `LabelMatcher.new(row_max_dx: 400.0)`
 
-### Aggiunto: `Util::WordMerger`
+The **application-specific adapters** for Italian Revenue Agency forms
+(Modello 770, Comunicazione IVA) are now provided as **external
+examples** under `examples/adapters/` (see below), not as part of the
+gem.
 
-Primitiva di merging configurabile, con tre strategie esplicite:
+### Added: `Util::WordMerger`
+
+A configurable merging primitive with three explicit strategies:
 
 ```ruby
 merger = Rpdfium::Util::WordMerger.new(x_gap: 20.0, y_tol: 3.0)
 
-# Fonde tutte le word adiacenti
+# Merge all adjacent words
 merger.merge_by_proximity(words)
 
-# Fonde solo word con stessa label (mapping word → label fornito dal chiamante)
+# Merge only words sharing the same label (word → label mapping supplied by the caller)
 merger.merge_by_label(words, labels_by_word)
 
-# Fonde solo word con label nil (orfane)
+# Merge only words with a nil label (orphans)
 merger.merge_unlabeled(words, labels_by_word)
 ```
 
-### Aggiunto: `Util::ColumnInference`
+### Added: `Util::ColumnInference`
 
-Primitiva di inferenza di colonne dati su PDF non-tabellari (form
-prestampati, layout con valori allineati per posizione ma senza
-linee). Algoritmo in 3 passi:
+A primitive for inferring data columns on non-tabular PDFs (prestamped
+forms, layouts whose values are aligned by position but lack ruling
+lines). The algorithm proceeds in three steps:
 
-1. Cluster per coordinata X (x0 left-align O x1 right-align)
-2. Spezza per gap verticali anomali
-3. Filtra per densità (coefficiente di variazione dei gap)
+1. Cluster by X coordinate (`x0` left-aligned OR `x1` right-aligned)
+2. Split on anomalous vertical gaps
+3. Filter by density (coefficient of variation of the gaps)
 
 ```ruby
 inference = Rpdfium::Util::ColumnInference.new(
-  x_tolerance: 3.0,     # tolleranza cluster X
-  min_size: 3,          # almeno 3 valori per colonna
-  cv_threshold: 0.15    # gap regolari
+  x_tolerance: 3.0,     # X cluster tolerance
+  min_size: 3,          # at least 3 values per column
+  cv_threshold: 0.15    # regular gaps
 )
 
 columns = inference.infer(words)
 # => [[word1, word2, ...], [word1, word2, ...]]
 ```
 
-### `Util::LabelMatcher` ora compone con `ColumnInference`
+### `Util::LabelMatcher` now composes with `ColumnInference`
 
 ```ruby
-# Senza riassegnazione (comportamento 0.3.15)
+# Without reassignment (0.3.15 behavior)
 matcher = Rpdfium::Util::LabelMatcher.new
 
-# Con riassegnazione per colonne ripetitive (ex repeat_headers)
+# With reassignment for repeating columns (formerly repeat_headers)
 matcher = Rpdfium::Util::LabelMatcher.new(
   column_inference: Rpdfium::Util::ColumnInference.new
 )
 ```
 
-Il flag `repeat_headers:` non esiste più — si passa direttamente un
-oggetto `ColumnInference` configurato (o `nil` per disabilitare).
+The `repeat_headers:` flag no longer exists — a configured
+`ColumnInference` object is passed directly (or `nil` to disable it).
 
-### Adapter applicativi (esempi esterni)
+### Application adapters (external examples)
 
-Distribuiti in `examples/adapters/`, NON parte della gem. Mostrano
-come comporre le primitive per casi specifici:
+Distributed under `examples/adapters/`, **not** part of the gem. They
+illustrate how to compose the primitives for specific cases:
 
-- **`Modello770Reader`** (per Dichiarazione sostituti d'imposta)
-- **`LiquidazioneIVAReader`** (per Comunicazione Liquidazioni IVA)
+- **`Modello770Reader`** (for the withholding-agent declaration)
+- **`LiquidazioneIVAReader`** (for the periodic VAT settlement
+  communication)
 
-Ognuno è uno script Ruby standalone con classe ~100 righe. Da
-copiare nel proprio progetto e adattare se serve.
+Each is a standalone Ruby script with a class of roughly 100 lines,
+intended to be copied into your own project and adapted as needed.
 
-### Filosofia
+### Philosophy
 
-La gem rpdfium fornisce primitive generaliste per leggere PDF. La
-**logica applicativa specifica per un modulo** (sapere che il 770 ha
-Quadro ST/SV/SX, che l'IVA ha caselline a cifre singole con virgola
-graficamente dipinta) appartiene al **codice del consumatore**, non
-alla gem.
+The rpdfium gem provides general-purpose primitives for reading PDFs.
+The **application logic specific to a given form** (knowing that the 770
+has the ST/SV/SX sections, that the VAT form uses single-digit boxes
+with a comma painted graphically by the template) belongs in the
+**consumer's code**, not in the gem.
 
-Le primitive `WordMerger`, `ColumnInference`, `LabelMatcher` sono
-**componibili**: ogni caso d'uso compone una pipeline specifica.
+The `WordMerger`, `ColumnInference`, and `LabelMatcher` primitives are
+**composable**: each use case composes a specific pipeline.
 
-### Non-regressione
+### Regression testing
 
-✅ Tutti i test core passano. F24, busta_paga, cu.pdf, complex,
-sample invariati. Le primitive nuove sono testate con assert
-dedicati.
+✅ All core tests pass. F24, busta_paga, cu.pdf, complex, and sample are
+unchanged. The new primitives are covered by dedicated assertions.
 
-### Migration guide da 0.3.19
+### Migration guide from 0.3.19
 
 ```ruby
-# Prima (0.3.19):
+# Before (0.3.19):
 page.label_value_pairs(
   data_font: "Courier",
   merge_adjacent: :smart,
   as_hash: true
 )
 
-# Dopo (0.4.0): usa l'adapter Modello770Reader (vedi examples/) o
-# componi a mano:
+# After (0.4.0): use the Modello770Reader adapter (see examples/) or
+# compose manually:
 matcher = Rpdfium::Util::LabelMatcher.new(
   column_inference: Rpdfium::Util::ColumnInference.new
 )
 pairs = page.label_value_pairs(data_font: "Courier", matcher: matcher)
-# poi merge custom + hash conversion nel tuo codice
+# then apply custom merging + hash conversion in your own code
 ```
 
-## [0.3.19] - estrazione su moduli a caselline (boxed_layout)
+## [0.3.19] - extraction on box-per-digit forms (boxed_layout)
 
-### Aggiunto: `label_value_pairs(boxed_layout: true)`
+### Added: `label_value_pairs(boxed_layout: true)`
 
-Alcuni moduli prestampati italiani (Comunicazione Liquidazioni
-Periodiche IVA, Modello Redditi quadri specifici) hanno un layout a
-**caselline separate per ogni cifra**: la partita IVA `01234567890`
-viene stampata come 11 caselline, l'importo `15.357,78` viene scritto
-come `15.357 7 8` con la parte intera, la virgola dipinta dal template,
-e le 2 cifre decimali in caselle ciascuna a ~10pt di distanza.
+Some Italian prestamped forms (the periodic VAT settlement
+communication, specific sections of the Modello Redditi) use a layout
+with **a separate box for each digit**: the VAT number `01234567890` is
+printed as 11 boxes, and the amount `15.357,78` is rendered as
+`15.357 7 8` — the integer part, the comma painted by the template, and
+the two decimal digits each in a box roughly 10pt apart.
 
-Il default `label_value_pairs` non riconosceva questi numeri come
-singoli valori: spezzava `15.357,78` in 3 word separate (`15.357`, `7`,
-`8`) perché PDFium inseriva automaticamente uno spazio "generato" tra
-le caselline (gap > 5pt → trattato come separatore di parole).
+The default `label_value_pairs` did not recognize these numbers as
+single values: it split `15.357,78` into three separate words
+(`15.357`, `7`, `8`) because PDFium automatically inserted a "generated"
+space between the boxes (gap > 5pt → treated as a word separator).
 
-### Soluzione: flag `boxed_layout: true`
+### Solution: the `boxed_layout: true` flag
 
-Configura automaticamente i parametri adatti:
+It automatically configures the appropriate parameters:
 
-- **`inject_spaces: false`** sui char (no spazi PDFium-generated
-  che spezzano le caselline)
-- **`x_tolerance: 15.0`** (gap tipico tra caselline ~10-13pt)
-- **`row_max_dx: 400.0`** sul LabelMatcher (le label sui moduli VP
-  sono a sinistra e i valori in colonna DEBITI/CREDITI sono a 250+pt
-  di distanza)
+- **`inject_spaces: false`** on characters (no PDFium-generated spaces
+  that split the boxes)
+- **`x_tolerance: 15.0`** (typical gap between boxes is ~10–13pt)
+- **`row_max_dx: 400.0`** on the LabelMatcher (labels on VP forms sit on
+  the left, while values in the DEBITS/CREDITS column are 250+pt away)
 
 ```ruby
 Rpdfium.open("iva.pdf") do |doc|
@@ -166,33 +170,33 @@ Rpdfium.open("iva.pdf") do |doc|
     data_font: "Helvetica",
     merge_adjacent: :smart,
     as_hash: true,
-    boxed_layout: true        # ← nuova opzione
+    boxed_layout: true        # ← new option
   )
 end
 ```
 
-### Risultato sul modulo IVA — Pagina 2 (Quadro VP)
+### Result on the VAT form — Page 2 (Section VP)
 
-**Prima (0.3.18)**:
+**Before (0.3.18):**
 
 ```ruby
 {
-  "CODICE FISCALE" => "0 2 0 9",                # spezzato per le caselline
-  "Operazioni straordinarie" => "5.455 8",      # label sbagliata, numero spezzato
-  "," => ["2", "1"],                             # virgola del template come label
-  "IVA esigibile" => "3.378 7 2",               # spezzato
-  "CREDITI" => "1.132 7",                       # label è il sub-header, non semantica
+  "CODICE FISCALE" => "0 2 0 9",                # split by the boxes
+  "Operazioni straordinarie" => "5.455 8",      # wrong label, number split
+  "," => ["2", "1"],                             # template comma read as a label
+  "IVA esigibile" => "3.378 7 2",               # split
+  "CREDITI" => "1.132 7",                       # label is the sub-header, not semantic
   ...
 }
 ```
 
-**Adesso (0.3.19) con `boxed_layout: true`**:
+**Now (0.3.19) with `boxed_layout: true`:**
 
 ```ruby
 {
   "CODICE FISCALE" => "01234567890",                              # ✓
   "Mod. N." => "01",                                              # ✓
-  "PERIODO DI RIFERIMENTO" => "04",                               # mese aprile
+  "PERIODO DI RIFERIMENTO" => "04",                               # month: April
   "VP2 Totale operazioni attive (al netto dell'IVA)" => "15.35778",   # € 15.357,78
   "VP3 Totale operazioni passive (al netto dell'IVA)" => "5.45582",   # € 5.455,82
   "VP4 IVA esigibile" => "3.37872",                                   # € 3.378,72
@@ -202,10 +206,10 @@ end
 }
 ```
 
-I valori numerici sono concatenati senza virgola decimale (la virgola
-è grafica nel template, non parte del data layer). Il consumatore può
-formatterla con post-processing: gli ultimi 2 caratteri sono i
-decimali, il resto è la parte intera.
+Numeric values are concatenated without the decimal comma (the comma is
+graphical in the template, not part of the data layer). The consumer can
+format it in post-processing: the last two characters are the decimals,
+the remainder is the integer part.
 
 ```ruby
 def parse_eur_amount(s)
@@ -215,88 +219,89 @@ parse_eur_amount("15.35778")  # => "15.357,78"
 parse_eur_amount("2.24601")   # => "2.246,01"
 ```
 
-### Quando usarlo
+### When to use it
 
-Attiva `boxed_layout: true` quando il modulo presenta:
-- Codici fiscali / partite IVA con cifre in caselline visibili
-- Importi con virgola decimale grafica e caselle per ogni cifra
-- Date in formato GG MM AAAA con caselle separate
-- Generalmente: PDF Agenzia delle Entrate con sfondo a celle
+Enable `boxed_layout: true` when the form presents:
 
-Lascia il default `false` per:
-- F24 stampato (Courier compatto senza caselle)
-- Modello 770 quadri ST/SV (testo libero compatto)
-- Buste paga / cedolini con tabelle standard
-- Tutti i casi dove i char sono già contigui
+- Tax codes / VAT numbers with digits in visible boxes
+- Amounts with a graphical decimal comma and a box per digit
+- Dates in DD MM YYYY format with separate boxes
+- In general: Italian Revenue Agency PDFs with a cell-based background
 
-### Non-regressione
+Keep the default `false` for:
 
-✅ 15/15 test passano. Il default `boxed_layout: false` mantiene il
-comportamento 0.3.18 byte-per-byte.
+- Printed F24 (compact Courier without boxes)
+- Modello 770 sections ST/SV (compact free text)
+- Payslips with standard tables
+- Any case where characters are already contiguous
+
+### Regression testing
+
+✅ 15/15 tests pass. The default `boxed_layout: false` preserves the
+0.3.18 behavior byte for byte.
 
 ### API compatibility
 
-Nessuna breaking change. Puoi passare `inject_spaces:`, `x_tolerance:`
-e altri kwargs separatamente per controllo fine, oppure usare la
-combinazione `boxed_layout: true` come scorciatoia.
+No breaking changes. You may pass `inject_spaces:`, `x_tolerance:`, and
+other kwargs separately for fine-grained control, or use the
+`boxed_layout: true` combination as a shortcut.
 
-## [0.3.18] - propagazione intestazioni su tabelle ripetitive
+## [0.3.18] - header propagation across repeating tables
 
-### Fixato: intestazioni di colonna non propagate alle righe successive
+### Fixed: column headers not propagated to subsequent rows
 
-Su moduli con **tabelle ripetitive** (Quadro ST/SV del 770, sezioni
-Erario/INPS/Regioni di F24 multi-riga, ecc.) le intestazioni di
-colonna sono stampate **una sola volta** in cima alla tabella e
-sottintese per tutte le righe successive (ST2, ST3, ..., ST13).
+On forms with **repeating tables** (the ST/SV sections of the 770, the
+Treasury/INPS/Regions sections of a multi-row F24, etc.) the column
+headers are printed **only once** at the top of the table and are
+implied for all subsequent rows (ST2, ST3, ..., ST13).
 
-Nelle versioni precedenti `label_value_pairs` limitava il matching
-label→valore a `col_max_dy=80pt`: bastava per la prima riga (ST2) ma
-le righe successive (oltre 80pt dall'header) finivano sotto label
-sbagliate o spurie (es. `ST5: [04 2021, 455,46]` invece di
-`Periodo di riferimento: 04 2021` + `Importo versato: 455,46`).
+In earlier versions `label_value_pairs` limited label→value matching to
+`col_max_dy=80pt`: sufficient for the first row (ST2), but subsequent
+rows (more than 80pt from the header) ended up under wrong or spurious
+labels (e.g. `ST5: [04 2021, 455,46]` instead of `Periodo di
+riferimento: 04 2021` + `Importo versato: 455,46`).
 
-### Soluzione: pass di riassegnazione per colonne
+### Solution: a column reassignment pass
 
-Il `LabelMatcher` ora ha una terza fase **`reassign_by_columns`**:
+The `LabelMatcher` now has a third phase, **`reassign_by_columns`**:
 
-1. **Identifica le colonne dati**: clustera i valori per coordinata
-   `x0` (left-aligned, es. codici tributo) **e** `x1` (right-aligned,
-   es. importi numerici "1.227,70" e "499,81" hanno x0 diversi ma x1
-   uguale). I valori sui moduli prestampati sono spesso allineati a
-   destra; servono entrambi gli allineamenti per coprire tutti i casi.
+1. **Identify the data columns**: cluster values by their `x0`
+   coordinate (left-aligned, e.g. tax codes) **and** by `x1`
+   (right-aligned, e.g. numeric amounts — "1.227,70" and "499,81" have
+   different x0 but the same x1). Values on prestamped forms are often
+   right-aligned; both alignments are needed to cover all cases.
 
-2. **Spezza colonne per gap verticali**: se due valori consecutivi
-   nello stesso x-cluster hanno un gap verticale > 3× la mediana dei
-   gap (o > 40pt), li separa in colonne distinte. Risolve casi tipo
-   "codice fiscale in alto pagina + tabella sotto" che condividono
-   la stessa x ma sono sezioni distinte.
+2. **Split columns on vertical gaps**: if two consecutive values in the
+   same x-cluster have a vertical gap > 3× the median gap (or > 40pt),
+   they are separated into distinct columns. This resolves cases such as
+   "tax code at the top of the page + table below" that share the same x
+   but are distinct sections.
 
-3. **Filtra per densità**: una colonna "vera" di tabella ripetitiva
-   ha valori regolarmente equispaziati. Misura il coefficiente di
-   variazione dei gap (`CV = std_dev/mean`). Soglia stretta: `CV <
-   0.15` (spacing molto regolare). Esclude falsi positivi come i 5
-   saldi del F24 right-aligned (SALDO A-B, C-D, E-F, G-H, M-N: stessa
-   x1 ma sezioni diverse, CV = 0.26).
+3. **Filter by density**: a genuine repeating-table column has regularly
+   equispaced values. Measure the coefficient of variation of the gaps
+   (`CV = std_dev/mean`). The threshold is tight: `CV < 0.15` (very
+   regular spacing). This excludes false positives such as the five
+   right-aligned F24 balances (SALDO A-B, C-D, E-F, G-H, M-N: same x1
+   but different sections, CV = 0.26).
 
-4. **Trova l'header canonico**: per ogni colonna dati identificata,
-   cerca la label di template **subito sopra** il `col_top` (il top
-   del primo valore della colonna). Quella label è l'intestazione
-   canonica.
+4. **Find the canonical header**: for each identified data column, look
+   for the template label **immediately above** `col_top` (the top of
+   the column's first value). That label is the canonical header.
 
-5. **Propaga**: assegna l'header canonico a TUTTI i valori della
-   colonna, anche quelli oltre `col_max_dy` dall'header originale.
+5. **Propagate**: assign the canonical header to ALL values in the
+   column, even those beyond `col_max_dy` from the original header.
 
-### Risultato sul 770 Quadro ST
+### Result on the 770 Section ST
 
-Pagina 4 prima (0.3.17):
+Page 4 before (0.3.17):
 
 ```ruby
 {
   "Periodo di riferimento mese anno" => "01 2021",
-  "Ritenute operate" => "394,13",   # solo ST2
+  "Ritenute operate" => "394,13",   # ST2 only
   "Importo versato" => "394,13",
-  "Codice tributo 11" => ["1001", "443,73", "1001", "405,96"],  # mescolato
-  "ST5" => ["04 2021", "455,46"],    # label spuria
+  "Codice tributo 11" => ["1001", "443,73", "1001", "405,96"],  # mixed
+  "ST5" => ["04 2021", "455,46"],    # spurious label
   "ST6" => ["05 2021", "407,40"],
   "ST7" => ["06 2021", "1.227,70"],
   # ...
@@ -304,7 +309,7 @@ Pagina 4 prima (0.3.17):
 }
 ```
 
-Adesso (0.3.18):
+Now (0.3.18):
 
 ```ruby
 {
@@ -316,115 +321,116 @@ Adesso (0.3.18):
     "394,13", "443,73", "405,96", "455,46", "407,40", "1.227,70",
     "367,74", "520,00", "463,37", "451,32", "499,81", "32,46"
   ],
-  "Importo versato" => [...stessi 12 importi...],
-  "Codice tributo 11" => ["1001", "1001", ..., "1001", "1712"],  # 12 codici
+  "Importo versato" => [...same 12 amounts...],
+  "Codice tributo 11" => ["1001", "1001", ..., "1001", "1712"],  # 12 codes
   "Data di versamento giorno mese anno 14" => [
     "16 02 2021", "16 03 2021", ..., "16 12 2021"
   ]
-  # NO più label spurie ST5/ST7/ST13
+  # NO more spurious ST5/ST7/ST13 labels
 }
 ```
 
-### Parametri configurabili
+### Configurable parameters
 
-`Rpdfium::Util::LabelMatcher.new` accetta tre nuovi parametri:
+`Rpdfium::Util::LabelMatcher.new` accepts three new parameters:
 
-- `repeat_headers:` (default `true`) — attiva/disattiva la
-  riassegnazione per colonne. Passa `false` per ripristinare il
-  comportamento 0.3.17.
-- `column_x_tolerance:` (default `3.0`) — tolleranza X per
-  considerare due valori "in stessa colonna".
-- `min_column_size:` (default `3`) — numero minimo di valori per
-  riconoscere una colonna come ripetitiva.
+- `repeat_headers:` (default `true`) — enable/disable column
+  reassignment. Pass `false` to restore the 0.3.17 behavior.
+- `column_x_tolerance:` (default `3.0`) — X tolerance for treating two
+  values as being "in the same column".
+- `min_column_size:` (default `3`) — minimum number of values required
+  to recognize a column as repeating.
 
 ```ruby
 matcher = Rpdfium::Util::LabelMatcher.new(
   repeat_headers: true,
-  column_x_tolerance: 2.0,    # cluster più stretto
-  min_column_size: 5           # solo colonne con 5+ righe
+  column_x_tolerance: 2.0,    # tighter cluster
+  min_column_size: 5           # only columns with 5+ rows
 )
 page.label_value_pairs(data_font: "Courier", matcher: matcher, ...)
 ```
 
-### Non-regressione
+### Regression testing
 
-✅ 15/15 test passano:
+✅ 15/15 tests pass:
+
 - busta_paga, cu.pdf rotation 90°, sample, complex
 - F24 499,81 → "importi a debito versati"
-- F24 1.615,90 → "SALDO (M-N) +/–" (saldo finale, non confuso coi
-  saldi di sezione SALDO A-B / C-D)
+- F24 1.615,90 → "SALDO (M-N) +/–" (final balance, not confused with the
+  section balances SALDO A-B / C-D)
 - F24 532,27 → "importi a debito versati" (TOTALE A)
 - 770 p2 "Cognome o Denominazione" → "Azienda S.R.L."
-- 770 p4 12 codici tributo + 12 importi + 12 date + 12 mesi
-- 770 p4 NO label spurie ST5/ST13
-- 770 p4 CODICE FISCALE → solo il singolo codice (non l'intera colonna)
+- 770 p4 12 tax codes + 12 amounts + 12 dates + 12 months
+- 770 p4 NO spurious ST5/ST13 labels
+- 770 p4 CODICE FISCALE → the single code only (not the whole column)
 
 ### API compatibility
 
-Nessuna breaking change. `repeat_headers: false` ripristina il
-comportamento 0.3.17 per chi preferisce.
+No breaking changes. `repeat_headers: false` restores the 0.3.17
+behavior for those who prefer it.
 
-## [0.3.17] - precisione label-value su moduli a colonne strette
+## [0.3.17] - label-value precision on narrow-column forms
 
-### Fixato: valori "wide" attraversano label sbagliate
+### Fixed: "wide" values crossing into wrong labels
 
-Su moduli prestampati con colonne template strette adiacenti (caso
-classico: 770 pagina 2 con "Cognome o Denominazione" / "Nome" /
-"Dichiarazione integrativa" / "Protocollo dichiarazione inviata"
-disposte sulla stessa riga), un valore che semanticamente appartiene
-al primo campo ma che si estende graficamente oltre il suo box
-(es. "Azienda S.R.L." scritto su tutta la riga) veniva spezzato in
-3 entry sotto label diverse.
+On prestamped forms with adjacent narrow template columns (the classic
+case: 770 page 2 with "Cognome o Denominazione" / "Nome" /
+"Dichiarazione integrativa" / "Protocollo dichiarazione inviata" laid
+out on the same line), a value that semantically belongs to the first
+field but extends graphically beyond its box (e.g. "Azienda S.R.L."
+written across the whole line) was split into three entries under
+different labels.
 
-`Page#label_value_pairs(merge_adjacent: :smart, ...)` ora:
+`Page#label_value_pairs(merge_adjacent: :smart, ...)` now:
 
-1. **Tight-merge passo finale**: dopo i passaggi by_label e
-   by_proximity esistenti, un terzo passo unisce le word con gap
-   orizzontale ≤ 10pt e stessa riga esatta (top differiscono di <1pt)
-   anche se cadono sotto label di colonna diverse. La soglia è
-   inferiore al gap inter-colonna tipico (>15pt) ma maggiore del
-   kerning intra-word (<5pt), così si riconoscono solo stringhe
-   "naturalmente unite".
+1. **Final tight-merge pass**: after the existing by_label and
+   by_proximity passes, a third pass joins words with a horizontal gap
+   ≤ 10pt on the exact same line (tops differing by < 1pt), even if they
+   fall under different column labels. The threshold is below the
+   typical inter-column gap (> 15pt) but above intra-word kerning
+   (< 5pt), so only "naturally joined" strings are recognized.
 
-2. **Label per wide values usa left-edge**: il `LabelMatcher` ora,
-   per valori più larghi di 60pt (tipico di stringhe merged), cerca
-   la label di colonna usando il **left edge** del valore (con piccolo
-   offset di 5pt) invece del midpoint. Così una denominazione che
-   inizia sotto "Cognome o Denominazione" mantiene quella label anche
-   se si estende oltre.
+2. **Label for wide values uses the left edge**: for values wider than
+   60pt (typical of merged strings), the `LabelMatcher` now looks for
+   the column label using the value's **left edge** (with a small 5pt
+   offset) instead of its midpoint. This way a denomination that begins
+   under "Cognome o Denominazione" keeps that label even when it extends
+   beyond.
 
-Risultato sul 770 pagina 2:
+Result on 770 page 2:
 
 ```ruby
-# Prima (0.3.16):
+# Before (0.3.16):
 {
-  "Cognome o Denominazione" => "Azienda",         # spezzata
-  "Dichiarazione integrativa" => "CONSULTING",       # sbagliata
-  "Protocollo dichiarazione inviata" => "S.R.L."     # sbagliata
+  "Cognome o Denominazione" => "Azienda",         # split
+  "Dichiarazione integrativa" => "CONSULTING",       # wrong
+  "Protocollo dichiarazione inviata" => "S.R.L."     # wrong
 }
 
-# Adesso (0.3.17):
+# Now (0.3.17):
 {
   "Cognome o Denominazione" => "Azienda S.R.L."  # ✓
 }
 ```
 
-I tre passaggi sono configurabili separatamente:
-- `merge_x_gap:` (default 20.0) — gap by_label e by_proximity
-- `merge_tight_x_gap:` (default 10.0) — gap del tight-merge
+The three passes are configurable separately:
 
-### Fixato: marcatori grafici di colonna catturati come label
+- `merge_x_gap:` (default 20.0) — gap for by_label and by_proximity
+- `merge_tight_x_gap:` (default 10.0) — gap for the tight-merge
 
-Su Quadro ST/SV del 770, il template stampa numerini "11", "14", "15",
-"16" come marcatori grafici delle colonne (indici delle posizioni nel
-form). Venivano catturati come label semantiche del LabelMatcher,
-producendo entry inutili come `"16" => ["443,73", "405,96", ...]`.
+### Fixed: graphical column markers captured as labels
 
-`Util::LabelMatcher` ora ignora di default le label che matchano
-`/\A\d{1,3}\z|\A[IVX]{1,5}\z/` — numeri brevi e numeri romani brevi,
-tipici marcatori di colonna. Configurabile via
-`LabelMatcher.new(ignore_label_pattern: ...)`. Passa `nil` per
-disattivare il filtro, o una propria Regexp per pattern custom.
+On the ST/SV sections of the 770, the template prints small numbers
+"11", "14", "15", "16" as graphical column markers (indices of the
+positions in the form). These were captured as semantic labels by the
+LabelMatcher, producing useless entries such as `"16" => ["443,73",
+"405,96", ...]`.
+
+`Util::LabelMatcher` now ignores, by default, labels matching
+`/\A\d{1,3}\z|\A[IVX]{1,5}\z/` — short numbers and short Roman numerals,
+typical column markers. Configurable via
+`LabelMatcher.new(ignore_label_pattern: ...)`. Pass `nil` to disable the
+filter, or your own Regexp for a custom pattern.
 
 Default:
 
@@ -433,66 +439,66 @@ matcher = Rpdfium::Util::LabelMatcher.new
 # ignore_label_pattern: /\A\d{1,3}\z|\A[IVX]{1,5}\z/
 
 matcher = Rpdfium::Util::LabelMatcher.new(ignore_label_pattern: nil)
-# nessun filtro, comportamento 0.3.16
+# no filter, 0.3.16 behavior
 
 matcher = Rpdfium::Util::LabelMatcher.new(ignore_label_pattern: /\AXX\z/)
-# filtro custom
+# custom filter
 ```
 
-### Risultato finale sul 770
+### Final result on the 770
 
-Confronto pagine principali prima/dopo:
+Comparison of the main pages, before/after:
 
-| Pagina | Prima (0.3.16) | Adesso (0.3.17) |
+| Page | Before (0.3.16) | Now (0.3.17) |
 | --- | --- | --- |
-| 2 | "Cognome": "Azienda" + 2 entry sbagliate | "Cognome o Denominazione": "Azienda S.R.L." |
-| 4 (Quadro ST) | "16": [443,73, 405,96, ...] (marcatore) | "Sospensione COVID Importo sospeso": [...] (label vera) |
-| 4 | "14": [16, 16, 17, ...] (marcatore) | "Data di versamento giorno mese anno": [16 02 2021, ...] |
-| 4 | "11": [1001, 443,73, ...] (marcatore) | "Codice tributo": [1001, ...] (label vera) |
+| 2 | "Cognome": "Azienda" + 2 wrong entries | "Cognome o Denominazione": "Azienda S.R.L." |
+| 4 (Section ST) | "16": [443,73, 405,96, ...] (marker) | "Sospensione COVID Importo sospeso": [...] (real label) |
+| 4 | "14": [16, 16, 17, ...] (marker) | "Data di versamento giorno mese anno": [16 02 2021, ...] |
+| 4 | "11": [1001, 443,73, ...] (marker) | "Codice tributo": [1001, ...] (real label) |
 
-### Non-regressione
+### Regression testing
 
-✅ 16/16 test passano (busta_paga, F24, cu.pdf rotation 90°, cu.pdf
-small font, sample, complex, e tutti i nuovi assert su 770).
+✅ 16/16 tests pass (busta_paga, F24, cu.pdf rotation 90°, cu.pdf small
+font, sample, complex, and all the new assertions on the 770).
 
 ### API compatibility
 
-Nessuna breaking change. I parametri nuovi (`merge_tight_x_gap`,
-`ignore_label_pattern`) hanno default sensati. Disattivare il filtro
-con `ignore_label_pattern: nil` ripristina il comportamento 0.3.16.
+No breaking changes. The new parameters (`merge_tight_x_gap`,
+`ignore_label_pattern`) have sensible defaults. Disabling the filter
+with `ignore_label_pattern: nil` restores the 0.3.16 behavior.
 
-## [0.3.16] - estrazione strutturata su moduli multi-pagina
+## [0.3.16] - structured extraction on multi-page forms
 
-### Aggiunto: `label_value_pairs(merge_adjacent:, as_hash:)`
+### Added: `label_value_pairs(merge_adjacent:, as_hash:)`
 
-Due nuove opzioni a `Page#label_value_pairs` che trasformano l'output da
-"lista di pair grezza" a **mappa strutturata `{label => valore}` pronta
-da consumare**, gestendo correttamente sia campi puntuali (checkbox,
-codici) che testo libero multi-word (denominazioni, indirizzi, header).
+Two new options on `Page#label_value_pairs` that transform the output
+from a "raw list of pairs" into a **structured `{label => value}` map
+ready to consume**, handling correctly both point fields (checkboxes,
+codes) and multi-word free text (denominations, addresses, headers).
 
-### `merge_adjacent` — 3 strategie selezionabili
+### `merge_adjacent` — 3 selectable strategies
 
-- **`false` (default)**: nessuna unione. Una word PDF = una entry.
-  Comportamento 0.3.15.
+- **`false` (default)**: no merging. One PDF word = one entry. 0.3.15
+  behavior.
 
-- **`true` o `:by_label`**: fonde solo word adiacenti con la **stessa
-  label col**. Conserva checkbox sotto label distinte (es. su 770 le
-  X dei quadri compilati ST/SV/SX restano separate perché ognuna ha
-  la sua label).
+- **`true` or `:by_label`**: merges only adjacent words sharing the same
+  column label. Preserves checkboxes under distinct labels (e.g. on the
+  770, the X marks of the completed ST/SV/SX sections remain separate
+  because each has its own label).
 
-- **`:by_proximity`**: fonde tutte le word adiacenti indipendentemente
-  dalla label. Per header con testo libero (es. "Soggetto: Azienda
-  S.R.L. ( 01234567890 )" diventa una entry sola).
+- **`:by_proximity`**: merges all adjacent words regardless of label.
+  For headers with free text (e.g. "Soggetto: Azienda S.R.L. (
+  01234567890 )" becomes a single entry).
 
-- **`:smart` (raccomandato per moduli complessi)**: combina i due —
-  by_label per word con label, by_proximity per word **orfane** senza
-  label. Funziona automaticamente su moduli che mescolano header
-  testuali (Soggetto), tabelle con checkbox (ST/SV/SX) e campi singoli
-  (codice fiscale, codice attività).
+- **`:smart` (recommended for complex forms)**: combines the two —
+  by_label for words with a label, by_proximity for **orphan** words
+  with no label. Works automatically on forms that mix text headers
+  (Soggetto), tables with checkboxes (ST/SV/SX), and single fields (tax
+  code, activity code).
 
-### `as_hash: true` — output strutturato
+### `as_hash: true` — structured output
 
-Trasforma `Array<Hash>` in `Hash` chiavi-valore:
+Transforms `Array<Hash>` into a key-value `Hash`:
 
 ```ruby
 Rpdfium.open("770.pdf") do |doc|
@@ -518,14 +524,14 @@ end
 # }
 ```
 
-Quando la label è la stessa per più valori, l'output diventa un Array:
-`"Codice fiscale" => ["01234567890", "01234567890"]`.
+When the same label applies to several values, the output becomes an
+Array: `"Codice fiscale" => ["01234567890", "01234567890"]`.
 
-Le word senza label associabile (es. header in alto pagina senza
-template di riferimento) confluiscono sotto la chiave `"_unlabeled"`
-come Array di stringhe.
+Words with no assignable label (e.g. headers at the top of the page with
+no reference template) collect under the `"_unlabeled"` key as an Array
+of strings.
 
-### Esempio: estrazione completa di un Modello 770
+### Example: full extraction of a Modello 770
 
 ```ruby
 Rpdfium.open("770.pdf") do |doc|
@@ -539,20 +545,20 @@ Rpdfium.open("770.pdf") do |doc|
       merge_adjacent: :smart,
       as_hash: true
     )
-    puts "=== Pagina #{i + 1} ==="
+    puts "=== Page #{i + 1} ==="
     h.each { |k, v| puts "  #{k}: #{v.inspect}" }
   end
 end
 ```
 
-Output reale su modello 770 (3 prime pagine):
+Actual output on a Modello 770 (first 3 pages):
 
 ```
-=== Pagina 1 ===
+=== Page 1 ===
   _unlabeled: ["Soggetto: Azienda S.R.L. ( 01234567890 )",
                "Identificativo dichiarazione: 11111111111 - 0000002 del 22/10/2022"]
 
-=== Pagina 2 ===
+=== Page 2 ===
   Codice fiscale: ["01234567890", "01234567890"]
   Codice attività: "999999"
   Indirizzo di posta elettronica/PEC: "AZIENDA@PEC.IT"
@@ -565,7 +571,7 @@ Output reale su modello 770 (3 prime pagine):
   Tipologia invio: "2"
   GESTIONE SEPARATA Dipendente Autonomo: "X"
 
-=== Pagina 3 ===
+=== Page 3 ===
   Codice fiscale: "01234567890"
   Codice fiscale dell'incaricato: "01877150696"
   giorno mese: "01 10"
@@ -573,67 +579,68 @@ Output reale su modello 770 (3 prime pagine):
   _unlabeled: ["2", "Firma Presente"]
 ```
 
-### `merge_x_gap` per tarare il merge
+### `merge_x_gap` to tune merging
 
-Parametro `merge_x_gap:` controlla il gap massimo (in punti) tra word
-adiacenti per essere considerate "unite". Default 20.0. Aumentalo per
-moduli con campi molto spaziati (header centrati su pagina).
+The `merge_x_gap:` parameter controls the maximum gap (in points)
+between adjacent words for them to be considered "joined". Default 20.0.
+Increase it for forms with widely spaced fields (page-centered headers).
 
-### Heuristica `best_label_for` (interna)
+### `best_label_for` heuristic (internal)
 
-Quando il valore ha sia `col` che `row` label, la scelta automatica
-preferisce:
-- `row` se è una label breve identificatrice ("ST", "Codice fiscale")
-- `col` quando è più descrittiva ("importi a debito versati")
+When a value has both a `col` and a `row` label, the automatic choice
+prefers:
 
-Per controllo fine, usa la API base senza `as_hash: true` e leggi
-direttamente `p[:labels][:col]` e `p[:labels][:row]`.
+- `row` if it is a short identifying label ("ST", "Codice fiscale")
+- `col` when it is more descriptive ("importi a debito versati")
 
-### Non-regressione
+For fine-grained control, use the base API without `as_hash: true` and
+read `p[:labels][:col]` and `p[:labels][:row]` directly.
 
-✅ busta_paga.pdf, cu.pdf p1, cu.pdf p199, sample, complex, F24, IVA
-— tutti i test invariati.
+### Regression testing
 
-✅ Il default di `merge_adjacent: false` mantiene il comportamento
-0.3.15 byte-per-byte. La 0.3.16 è purely additiva.
+✅ busta_paga.pdf, cu.pdf p1, cu.pdf p199, sample, complex, F24, IVA —
+all tests unchanged.
+
+✅ The default `merge_adjacent: false` preserves the 0.3.15 behavior byte
+for byte. 0.3.16 is purely additive.
 
 ### API compatibility
 
-Nessuna breaking change.
+No breaking changes.
 
-## [0.3.15] - associazione label-valore su moduli compilati
+## [0.3.15] - label-value association on completed forms
 
-### Aggiunto: `Page#label_value_pairs` e `Util::LabelMatcher`
+### Added: `Page#label_value_pairs` and `Util::LabelMatcher`
 
-Su PDF di "moduli compilati" (F24, comunicazioni IVA, modelli 770,
-dichiarazioni dei redditi) le 3 API introdotte nella 0.3.14
-(`font_inventory`, `chars_where`, `lines`) permettono di **separare**
-il layer template dai dati. La 0.3.15 va oltre: **associa
-semanticamente** ogni valore inserito alla sua etichetta nel template,
-così l'utente non deve sapere a priori la geometria del modulo.
+On "completed form" PDFs (F24, VAT communications, Modello 770, income
+tax returns), the three APIs introduced in 0.3.14 (`font_inventory`,
+`chars_where`, `lines`) make it possible to **separate** the template
+layer from the data. 0.3.15 goes further: it **semantically associates**
+each entered value with its label in the template, so the user need not
+know the form's geometry in advance.
 
-### Come funziona
+### How it works
 
-L'algoritmo opera in tre step:
+The algorithm operates in three steps:
 
-1. **Cluster del template in label coerenti** — parole del modello
-   geometricamente vicine (stessa riga adiacenti, o righe successive
-   sovrapposte in x) vengono unite in un'unica label. Esempio:
-   "importi", "a", "debito", "versati" → label unica `"importi a
+1. **Cluster the template into coherent labels** — template words that
+   are geometrically close (adjacent on the same line, or on successive
+   lines overlapping in x) are merged into a single label. For example:
+   "importi", "a", "debito", "versati" → the single label `"importi a
    debito versati"`.
 
-2. **Per ogni valore inserito, cerca due tipi di label**:
-   - `col` — label SOPRA nella stessa colonna (x sovrapposto col
-     valore, bottom < value top, scelta la più vicina verticalmente).
-     Ruolo tipico: nome del campo/colonna.
-   - `row` — label A SINISTRA nella stessa riga (y sovrapposto, x1 <
-     value x0, scelta la più vicina orizzontalmente). Ruolo tipico:
-     identificatore di riga ("TOTALE A", "SALDO").
+2. **For each entered value, look for two kinds of label**:
+   - `col` — the label ABOVE in the same column (x overlapping the
+     value, bottom < value top, the vertically nearest one chosen).
+     Typical role: field/column name.
+   - `row` — the label to the LEFT on the same line (y overlapping, x1 <
+     value x0, the horizontally nearest one chosen). Typical role: row
+     identifier ("TOTALE A", "SALDO").
 
-3. **Ritorna** una mappatura `{ value:, labels: { col:, row: }, geometry: }`
-   per ogni valore.
+3. **Return** a mapping `{ value:, labels: { col:, row: }, geometry: }`
+   for each value.
 
-### Esempio: F24
+### Example: F24
 
 ```ruby
 Rpdfium.open("f24.pdf") do |doc|
@@ -658,12 +665,12 @@ Output:
 2021      → col: "anno di riferimento"
 532,27    → col: "importi a debito versati", row: "A"     (TOTALE A)
 236,38    → col: "SALDO (A-B) +/–",          row: "B"
-1.253,00  → col: "importi a debito versati"               (sezione INPS)
+1.253,00  → col: "importi a debito versati"               (INPS section)
 1.341,00  → col: "SALDO (C-D) +/–",          row: "D"
-1.615,90  → col: "SALDO (M-N) +/–",          row: "EURO +"   (saldo finale)
+1.615,90  → col: "SALDO (M-N) +/–",          row: "EURO +"   (final balance)
 ```
 
-### Esempio: Modello 770 Quadro ST
+### Example: Modello 770 Section ST
 
 ```ruby
 Rpdfium.open("770.pdf") do |doc|
@@ -678,21 +685,21 @@ end
 # 16     → col: "Data di versamento giorno mese anno"
 ```
 
-### `Util::LabelMatcher` come classe autonoma
+### `Util::LabelMatcher` as a standalone class
 
-Per casi avanzati (es. matching su un sottoinsieme di pagina, con
-soglie tarate, o riusato su più pagine) la logica è esposta come
-classe separata:
+For advanced cases (e.g. matching on a subset of a page, with tuned
+thresholds, or reused across multiple pages) the logic is exposed as a
+separate class:
 
 ```ruby
 matcher = Rpdfium::Util::LabelMatcher.new(
-  col_max_dy: 50.0,           # max distanza label sopra -> valore
-  row_max_dx: 150.0,          # max distanza label sinistra -> valore
-  col_x_tolerance: 5.0,       # overlap x richiesto per label "sopra"
-  row_y_tolerance: 1.0,       # overlap y richiesto per label "sinistra"
-  cluster_same_row_dy: 4.0,   # tolleranza cluster word stessa riga
+  col_max_dy: 50.0,           # max distance from label above -> value
+  row_max_dx: 150.0,          # max distance from label on the left -> value
+  col_x_tolerance: 5.0,       # x overlap required for an "above" label
+  row_y_tolerance: 1.0,       # y overlap required for a "left" label
+  cluster_same_row_dy: 4.0,   # cluster tolerance, words on the same line
   cluster_same_row_dx: 12.0,
-  cluster_adj_row_dy: 4.0     # tolleranza cluster word righe adiacenti
+  cluster_adj_row_dy: 4.0     # cluster tolerance, words on adjacent lines
 )
 
 data_words = Rpdfium::Util::WordExtractor.new.extract_words(page.chars_where(font: "Courier"))
@@ -700,59 +707,58 @@ anchor_words = Rpdfium::Util::WordExtractor.new.extract_words(page.chars_where(f
 
 pairs = matcher.match(data_words, anchor_words)
 
-# Bonus: ispeziona quali label il matcher costruisce
+# Bonus: inspect which labels the matcher builds
 labels = matcher.cluster_anchors(anchor_words)
 ```
 
-### Limitazioni note
+### Known limitations
 
-- **Caselline separate per cifre**: su moduli con campi tipo codice
-  fiscale o numeri italiani spezzati su caselle separate
-  (`0 2 0 9 8 1 2 0 6 8 2`, `15.357 , 7 8`) il word extractor non
-  unisce le cifre. Aumentare `x_tolerance` aiuta, ma è tradeoff: il
-  fix definitivo richiede post-elaborazione consumer-side.
-- **Label troppo larghe**: a volte il cluster unisce label adiacenti
-  che sarebbero meglio distinte. Le soglie default funzionano sulla
-  maggior parte dei moduli italiani Agenzia delle Entrate/INPS; per
-  layout diversi tara i parametri di `LabelMatcher`.
-- **Label "abbondanti"**: per valori molto vicini al margine, le label
-  trovate sono ovvie ma poco informative. Filtrare i pair per
-  `data_filter` selettivo aiuta (esempio: solo numeri con virgola).
+- **Box-per-digit fields**: on forms with fields such as tax codes or
+  Italian numbers split across separate boxes (`0 2 0 9 8 1 2 0 6 8 2`,
+  `15.357 , 7 8`), the word extractor does not join the digits.
+  Increasing `x_tolerance` helps, but is a tradeoff: the definitive fix
+  requires consumer-side post-processing.
+- **Overly wide labels**: sometimes the cluster joins adjacent labels
+  that would be better kept distinct. The default thresholds work on
+  most Italian Revenue Agency/INPS forms; tune the `LabelMatcher`
+  parameters for different layouts.
+- **"Abundant" labels**: for values very close to the margin, the labels
+  found are obvious but uninformative. Filtering the pairs with a
+  selective `data_filter` helps (for example: only numbers with a
+  comma).
 
-### Non-regressione
+### Regression testing
 
-✅ busta_paga.pdf, cu.pdf p1, cu.pdf p199, sample, complex — tutti
-i test invariati.
+✅ busta_paga.pdf, cu.pdf p1, cu.pdf p199, sample, complex — all tests
+unchanged.
 
 ### API compatibility
 
-Nessuna breaking change. Le API 0.3.14 (`font_inventory`,
-`chars_where`, `lines`) restano invariate. `Util::LabelMatcher` è
-una nuova classe additiva.
+No breaking changes. The 0.3.14 APIs (`font_inventory`, `chars_where`,
+`lines`) are unchanged. `Util::LabelMatcher` is a new additive class.
 
-## [0.3.14] - estrazione form-aware tramite font filtering
+## [0.3.14] - form-aware extraction via font filtering
 
-### Aggiunto: `Page#font_inventory`, `Page#chars_where`, `Page#lines`
+### Added: `Page#font_inventory`, `Page#chars_where`, `Page#lines`
 
-Tre nuove API per estrarre dati da PDF di "moduli compilati" — F24,
-comunicazioni IVA, modelli 770, dichiarazioni dei redditi e in generale
-qualsiasi PDF di output da gestionali in cui il template grafico del
-modulo e i dati inseriti dall'utente coesistono come testo statico
-(nessun AcroForm, nessun tag PDF/UA).
+Three new APIs for extracting data from "completed form" PDFs — F24, VAT
+communications, Modello 770, income tax returns, and in general any PDF
+produced by accounting software in which the form's graphical template
+and the user-entered data coexist as static text (no AcroForm, no PDF/UA
+tags).
 
-Su questi PDF il pipeline `Table::Extractor` produce molto rumore
-perché vede il modulo intero (etichette del template + dati) come una
-griglia di tabelle. La soluzione semantica è separare i char per
-"ruolo" usando il font/altezza: tipicamente il template usa font
-proporzionali (Futura, Helvetica, Times) mentre i dati inseriti dal
-gestionale usano un singolo font (di solito Courier o Helvetica a una
-size specifica).
+On these PDFs the `Table::Extractor` pipeline produces a lot of noise
+because it sees the entire form (template labels + data) as a grid of
+tables. The semantic solution is to separate characters by "role" using
+font/height: typically the template uses proportional fonts (Futura,
+Helvetica, Times) while the data entered by the software uses a single
+font (usually Courier, or Helvetica at a specific size).
 
 ### `Page#font_inventory`
 
-Distribuzione dei char per `(font, altezza, weight)`, ordinata per
-count decrescente. Utile per scoprire empiricamente quale font usano
-i dati su un modulo sconosciuto:
+Distribution of characters by `(font, height, weight)`, sorted by
+descending count. Useful for empirically discovering which font the data
+uses on an unknown form:
 
 ```ruby
 page.font_inventory.first(5).each do |g|
@@ -765,34 +771,34 @@ end
 # Futura-Bold           h=11.7  w=868  |   169 char | "CONTRIBUENTESEZIONE ERARIOSEZIONE INPSSE"
 ```
 
-`height` è l'altezza visiva del char in punti (più affidabile di
-`fontsize` che PDFium normalizza a 1.0 quando la dimensione reale è
-nella matrice CTM, caso frequente sui moduli scalati).
+`height` is the visual height of the character in points (more reliable
+than `fontsize`, which PDFium normalizes to 1.0 when the actual size is
+in the CTM matrix — a frequent case on scaled forms).
 
 ### `Page#chars_where(font:, height:, weight:, bbox:, where:)`
 
-Filtro generico sui char. Tutti i parametri sono opzionali e
-combinabili in AND:
+A generic filter over characters. All parameters are optional and
+combinable in AND:
 
-- `font:` String esatto, Array di String, o Regexp
-- `height:` Float (con tolleranza 0.1pt), Range, o Array
-- `weight:` Integer o Range
-- `bbox:` `[left, top, right, bottom]` in coord top-down
-- `where:` block per filtri arbitrari
+- `font:` exact String, Array of Strings, or Regexp
+- `height:` Float (with 0.1pt tolerance), Range, or Array
+- `weight:` Integer or Range
+- `bbox:` `[left, top, right, bottom]` in top-down coordinates
+- `where:` block for arbitrary filters
 
 ```ruby
 data_chars = page.chars_where(font: "Courier")
-# oppure
+# or
 data_chars = page.chars_where(font: /courier/i, height: 8.0..12.0)
-# oppure con bbox
+# or with bbox
 sezione_erario = page.chars_where(font: "Courier", bbox: [0, 250, 595, 400])
 ```
 
 ### `Page#lines(font:, ...)`
 
-Helper di alto livello che combina `chars_where` + WordExtractor +
-clustering per riga. Ritorna un Array di stringhe, una per riga
-(top-to-bottom, char dentro la riga left-to-right):
+A high-level helper that combines `chars_where` + WordExtractor + per-row
+clustering. Returns an Array of strings, one per row (top-to-bottom,
+characters within a row left-to-right):
 
 ```ruby
 # F24
@@ -814,57 +820,59 @@ end
 # ]
 ```
 
-Funziona ugualmente bene su:
-- **F24**: codici tributo, importi a debito/credito, sezioni separate
-- **Comunicazione IVA**: importi del Quadro VP (operazioni attive/passive,
-  IVA esigibile/detratta, dovuta/credito)
-- **Modello 770**: ritenute mese per mese con codici tributo e date di
-  versamento
-- **Dichiarazione redditi (SP, PF, SC)**: dati anagrafici e quadri
+It works equally well on:
 
-### Tradeoff e limitazioni
+- **F24**: tax codes, debit/credit amounts, separate sections
+- **VAT communication**: Section VP amounts (active/passive operations,
+  collectible/deductible VAT, due/credit)
+- **Modello 770**: month-by-month withholdings with tax codes and
+  payment dates
+- **Income tax returns (SP, PF, SC)**: registry data and sections
 
-`Page#lines` ritorna righe **leggibili**, non già strutturate. Su
-moduli con caselle separate per cifra (es. il codice fiscale `0 2 0 9
-8 1 2 0 6 8 2`, o numeri italiani con casella decimali separata
-`15.357,78` → `15.357 7 8`), i gap visivi tra caselline superano
-`x_tolerance` di default e le righe risultano "spaziate". Soluzioni:
+### Tradeoffs and limitations
 
-1. Aumentare `x_tolerance` per quei filtri specifici (es. 8.0)
-2. Post-elaborare le righe per riconoscere il pattern del modulo
-   (specifico per ogni modello)
+`Page#lines` returns **readable** rows, not already structured ones. On
+forms with a separate box per digit (e.g. the tax code `0 2 0 9 8 1 2 0
+6 8 2`, or Italian numbers with a separate decimals box `15.357,78` →
+`15.357 7 8`), the visual gaps between boxes exceed the default
+`x_tolerance` and the rows come out "spaced". Solutions:
 
-La libreria fornisce le primitive composable; l'interpretazione del
-modulo specifico resta al chiamante perché ogni modello ha layout
-diverso.
+1. Increase `x_tolerance` for those specific filters (e.g. 8.0)
+2. Post-process the rows to recognize the form's pattern (specific to
+   each model)
 
-### Non-regressione
+The library provides composable primitives; interpretation of the
+specific form is left to the caller, because each model has a different
+layout.
+
+### Regression testing
 
 ✅ busta_paga.pdf: `1.993,00`, `COGNOME E NOME`, `NETTO BUSTA`
 ✅ cu.pdf p1 rotation 90°: `BANCA NAZIONALE`, `Categoria`
-✅ cu.pdf p199 small font: `Categoria` (no `iCategora`)
+✅ cu.pdf p199 small font: `Categoria` (not `iCategora`)
 ✅ sample.pdf, complex.pdf
 
 ### API compatibility
 
-Nessuna breaking change. Le tre nuove API sono additive. Il pipeline
-`Table::Extractor` esistente continua a funzionare invariato per chi
-ha tabelle "vere" con bordi.
+No breaking changes. The three new APIs are additive. The existing
+`Table::Extractor` pipeline continues to work unchanged for those who
+have "real" tables with borders.
 
-## [0.3.13] - `Page#struct_tree`: struttura semantica dei PDF tagged
+## [0.3.13] - `Page#struct_tree`: semantic structure of tagged PDFs
 
-### Aggiunto: lettura del PDF Structure Tree
+### Added: reading the PDF Structure Tree
 
-Nuova API `Page#struct_tree` che espone la struttura logica dei PDF
-tagged (PDF/UA, esport accessibility-friendly da Word/LibreOffice/InDesign).
+A new `Page#struct_tree` API that exposes the logical structure of
+tagged PDFs (PDF/UA, accessibility-friendly exports from
+Word/LibreOffice/InDesign).
 
-Per documenti tagged offre un accesso al contenuto **completamente
-indipendente dalla geometria**: per ogni element del tree è possibile
-sapere il suo tipo strutturale (`P`, `H1`, `Table`, `TR`, `TH`, `TD`,
-`Figure`, ecc.), il testo che lo compone, gli attributi PDF strutturali
-e i collegamenti via Marked Content ID al contenuto della pagina.
+For tagged documents it offers access to the content **completely
+independent of geometry**: for each element of the tree you can obtain
+its structural type (`P`, `H1`, `Table`, `TR`, `TH`, `TD`, `Figure`,
+etc.), the text it comprises, the structural PDF attributes, and the
+links via Marked Content ID to the page content.
 
-### Esempio: estrazione tabella zero-geometria
+### Example: zero-geometry table extraction
 
 ```ruby
 page.struct_tree do |tree|
@@ -877,71 +885,71 @@ page.struct_tree do |tree|
     end
   end
 end
-# → ["Region", "Revenue", "Growth"]      (TH — riga header)
-# → ["Italy", "1.250.000", "+12%"]       (TD — riga dati)
+# → ["Region", "Revenue", "Growth"]      (TH — header row)
+# → ["Italy", "1.250.000", "+12%"]       (TD — data row)
 # → ["France", "980.000", "+8%"]
 # → ["Germany", "2.100.000", "+15%"]
 ```
 
-Vantaggi rispetto al pipeline geometrico `Table::Extractor`:
+Advantages over the geometric `Table::Extractor` pipeline:
 
-- distingue header (`TH`) da data (`TD`) — info che il pipeline
-  geometrico perde
-- funziona su tabelle **senza linee** (text-only) o con linee parziali
-- riconosce row/col span via `<TD>.attributes` (`RowSpan`, `ColSpan`)
-- zero euristica di clustering
+- distinguishes header (`TH`) from data (`TD`) — information the
+  geometric pipeline loses
+- works on tables **without lines** (text-only) or with partial lines
+- recognizes row/col spans via `<TD>.attributes` (`RowSpan`, `ColSpan`)
+- zero clustering heuristics
 
-Limitazione: richiede PDF tagged. La maggior parte dei PDF da gestionali
-italiani (TeamSystem, Zucchetti, banche italiane) NON sono tagged. Per
-quelli il pipeline geometrico esistente resta l'unica strada.
+Limitation: requires a tagged PDF. Most PDFs from Italian accounting
+software (TeamSystem, Zucchetti, Italian banks) are NOT tagged. For
+those, the existing geometric pipeline remains the only option.
 
-### API completa
+### Full API
 
 ```ruby
-tree = page.struct_tree     # → Tree o nil
-tree.empty?                 # true se il tree è strutturalmente vuoto
-tree.roots                  # → [Element, ...] root del tree (di solito 1 "Document")
-tree.walk { |el| ... }      # itera depth-first
+tree = page.struct_tree     # → Tree or nil
+tree.empty?                 # true if the tree is structurally empty
+tree.roots                  # → [Element, ...] tree roots (usually 1 "Document")
+tree.walk { |el| ... }      # depth-first iteration
 tree.walk.to_a              # Enumerator
 tree.find_all(type: "P")    # filter by type
-tree.tables                 # shortcut per find_all(type: "Table")
+tree.tables                 # shortcut for find_all(type: "Table")
 
 element.type                # "P", "Table", "TR", "TD", ...
 element.children            # → [Element, ...]
-element.parent              # → Element o nil
-element.text                # ricostruisce testo da MCID + ActualText
-element.actual_text         # /ActualText attribute (override per legature, math)
-element.alt_text            # /Alt (per Figure/Formula)
-element.lang                # "it-IT", "en-US", ecc.
+element.parent              # → Element or nil
+element.text                # reconstructs text from MCID + ActualText
+element.actual_text         # /ActualText attribute (override for ligatures, math)
+element.alt_text            # /Alt (for Figure/Formula)
+element.lang                # "it-IT", "en-US", etc.
 element.marked_content_ids  # → [Integer]
 element.attributes          # → { name => value } (RowSpan, ColSpan, ...)
-element.walk { |el| ... }   # depth-first del sub-tree
-element.leaves              # foglie (elements senza children)
+element.walk { |el| ... }   # depth-first over the sub-tree
+element.leaves              # leaves (elements without children)
 ```
 
 ### Lifecycle
 
-Il tree è "owning" — chiamare `FPDF_StructTree_Close` lo dealloca.
+The tree is "owning" — calling `FPDF_StructTree_Close` deallocates it.
 
-- **Lifecycle implicito (zero-config)**: non chiudere mai esplicitamente.
-  PDFium dealloca il tree alla chiusura del documento. Il tree resta in
-  memoria fino a quel momento (può essere ~MB su PDF grossi, ma niente
-  perdita persistente).
-- **Lifecycle deterministico**: usa il blocco
-  `page.struct_tree do |tree| ... end`. All'uscita dal blocco il tree
-  viene chiuso, anche in caso di eccezione.
+- **Implicit lifecycle (zero-config)**: never close it explicitly.
+  PDFium deallocates the tree when the document is closed. The tree
+  stays in memory until then (it can be ~MB on large PDFs, but there is
+  no persistent leak).
+- **Deterministic lifecycle**: use the block form
+  `page.struct_tree do |tree| ... end`. On exit from the block the tree
+  is closed, even in case of an exception.
 
-**Scelta progettuale**: non usiamo `ObjectSpace.define_finalizer` per il
-tree. Il documento può essere chiuso prima del tree (es. dentro un
-blocco `Rpdfium.open do |doc| ... end`), e il finalizer GC chiamerebbe
-`FPDF_StructTree_Close` su memoria già liberata → use-after-free →
-segfault. Lasciare la cleanup al `FPDF_CloseDocument` è sempre sicuro;
-la cleanup esplicita tramite `tree.close` o blocco è sicura purché il
-documento sia ancora vivo.
+**Design choice**: we do not use `ObjectSpace.define_finalizer` for the
+tree. The document may be closed before the tree (e.g. inside a
+`Rpdfium.open do |doc| ... end` block), and the GC finalizer would call
+`FPDF_StructTree_Close` on already-freed memory → use-after-free →
+segfault. Leaving cleanup to `FPDF_CloseDocument` is always safe;
+explicit cleanup via `tree.close` or the block form is safe as long as
+the document is still alive.
 
-### 24 binding C-level mancanti aggiunti
+### 24 missing C-level bindings added
 
-Oltre agli 8 binding di base (già presenti):
+In addition to the 8 base bindings (already present):
 
 - `FPDF_StructElement_GetParent`, `GetID`, `GetLang`, `GetObjType`
 - `FPDF_StructElement_GetActualText`, `GetAltText`, `GetExpansion`
@@ -953,69 +961,69 @@ Oltre agli 8 binding di base (già presenti):
   `GetBooleanValue`, `GetNumberValue`, `GetStringValue`, `GetBlobValue`,
   `CountChildren`, `GetChildAtIndex`
 
-Tutte esposte via `Rpdfium::Raw.FPDF_*` per chi vuole bypassare i
-wrapper.
+All exposed via `Rpdfium::Raw.FPDF_*` for those who want to bypass the
+wrappers.
 
-### Tre stati possibili di `page.struct_tree`
+### Three possible states of `page.struct_tree`
 
-| Caso | `page.struct_tree` ritorna |
+| Case | `page.struct_tree` returns |
 | --- | --- |
-| PDF non tagged | `nil` |
-| PDF tagged ma vuoto (es. CR Banca d'Italia, 717 placeholder) | Tree con `empty? == true` |
-| PDF tagged correttamente (Word/LibreOffice export) | Tree navigabile |
+| Untagged PDF | `nil` |
+| Tagged but empty PDF (e.g. Bank of Italy CR, 717 placeholder) | Tree with `empty? == true` |
+| Properly tagged PDF (Word/LibreOffice export) | Navigable tree |
 
-Verificato sui 4 PDF di test: busta_paga/sample/complex → nil; cu.pdf
-p1 → empty; PDF generato via `soffice --convert-to pdf` → tree completo
-con `<Document>` → `<P>`/`<Table>`/`<TR>`/`<TH>`/`<TD>` annidati.
+Verified on the 4 test PDFs: busta_paga/sample/complex → nil; cu.pdf
+p1 → empty; PDF generated via `soffice --convert-to pdf` → full tree
+with `<Document>` → nested `<P>`/`<Table>`/`<TR>`/`<TH>`/`<TD>`.
 
-### Non-regressione
+### Regression testing
 
-Tutti i casi di test esistenti continuano a funzionare:
+All existing test cases continue to work:
 
 - ✅ busta_paga.pdf: `1.993,00`, `COGNOME E NOME`, `NETTO BUSTA`
 - ✅ cu.pdf rotation 90° p1: `BANCA NAZIONALE`, `Categoria`
-- ✅ cu.pdf p199: `Categoria` (no `iCategora`)
+- ✅ cu.pdf p199: `Categoria` (not `iCategora`)
 - ✅ sample/complex.pdf
 
-## [0.3.12] - ottimizzazioni performance estrazione tabelle
+## [0.3.12] - table extraction performance optimizations
 
-(vedi note di rilascio precedenti)
+(See the previous release notes.)
 
-## [0.3.11] - opzione `cell_padding` per char fuori bordo cella
+## [0.3.11] - `cell_padding` option for characters outside the cell border
 
-### Aggiunto: `Table#extract(cell_padding: N)` per recuperare char border-line
+### Added: `Table#extract(cell_padding: N)` to recover border-line characters
 
-Su alcuni PDF (CR Banca d'Italia, header tabelle) il primo char di una
-cella è disegnato **leggermente fuori** dal bordo della cella stessa.
-Esempio: la `I` maiuscola di "Intermediario:" ha `x0=24.0` ma la
-cella inizia a `x=25.6` (la `I` sporge di 1.6 punti a sinistra del
-bordo). Il filtro midpoint (identico a pdfplumber) calcola `h_mid =
-25.25` e esclude la `I` perché < 25.6, producendo `"ntermediario:"`.
+On some PDFs (Bank of Italy CR, table headers) the first character of a
+cell is drawn **slightly outside** the cell's own border. For example:
+the capital `I` of "Intermediario:" has `x0=24.0` but the cell starts at
+`x=25.6` (the `I` protrudes 1.6 points to the left of the border). The
+midpoint filter (identical to pdfplumber) computes `h_mid = 25.25` and
+excludes the `I` because it is < 25.6, producing `"ntermediario:"`.
 
-Pdfplumber ha **esattamente lo stesso problema** (verificato sul PDF):
-il midpoint filter è una decisione di design comune. Però noi possiamo
-offrire una via di mezzo.
+Pdfplumber has **exactly the same problem** (verified on the PDF): the
+midpoint filter is a common design decision. We can, however, offer a
+middle ground.
 
-### Nuova API
+### New API
 
 ```ruby
-table.extract                       # default: pdfplumber-compat
-table.extract(cell_padding: 2.0)    # recupera char che sporgono fino
-                                    # a 2pt fuori dai bordi sinistro/alto
+table.extract                       # default: pdfplumber-compatible
+table.extract(cell_padding: 2.0)    # recover characters protruding up
+                                    # to 2pt beyond the left/top borders
 ```
 
-`cell_padding` estende il bbox di ogni cella verso **sinistra** e
-verso l'**alto** di N punti prima di applicare il filtro midpoint.
-Default 0.0 = comportamento identico a prima (e a pdfplumber).
+`cell_padding` extends each cell's bbox to the **left** and **upward**
+by N points before applying the midpoint filter. Default 0.0 = behavior
+identical to before (and to pdfplumber).
 
-Il padding è asimmetrico (solo bordi sinistro/alto, non destro/basso)
-per evitare di catturare char condivisi con celle adiacenti: se
-entrambe le celle vicine espandessero su tutti i lati, un char tra
-loro finirebbe in entrambe. Limitando il padding ai bordi "interno-
-sinistro" e "interno-alto" un char fuori-bordo-sinistro finisce solo
-nella cella alla sua destra, dove probabilmente appartiene.
+The padding is asymmetric (only the left/top borders, not right/bottom)
+to avoid capturing characters shared with adjacent cells: if both
+neighboring cells expanded on all sides, a character between them would
+end up in both. By limiting the padding to the "inner-left" and
+"inner-top" borders, a character outside the left border ends up only in
+the cell to its right, where it most likely belongs.
 
-### Risultato sul PDF problematico
+### Result on the problematic PDF
 
 ```
 ext = Rpdfium::Table::Extractor.new(page, ...)
@@ -1023,848 +1031,76 @@ ext.tables.first.extract                       # → ["ntermediario:", "BANCA NA
 ext.tables.first.extract(cell_padding: 2.0)    # → ["Intermediario:", "BANCA NAZIONALE..."]
 ```
 
-### Test di non-regressione
+### Regression testing
 
-Tutti i PDF di test continuano a funzionare correttamente con cell_padding
-default (0.0):
+All test PDFs continue to work correctly with the default `cell_padding`
+(0.0):
 
-- ✅ busta_paga.pdf (numeri, parole con spazi, NETTO BUSTA)
-- ✅ cu.pdf pag. 1 (rotation 90°): Categoria, RISCHI AUTOLIQUIDANTI, 172.136
-- ✅ cu.pdf pag. 199 (rotation 0°, font piccolo): Categoria, Tipo Attività
-- ✅ sample.pdf (Lorem ipsum) + complex.pdf (>200k char)
+- ✅ busta_paga.pdf (numbers, words with spaces, NETTO BUSTA)
+- ✅ cu.pdf p. 1 (rotation 90°): Categoria, RISCHI AUTOLIQUIDANTI, 172.136
+- ✅ cu.pdf p. 199 (rotation 0°, small font): Categoria, Tipo Attività
+- ✅ sample.pdf (Lorem ipsum) + complex.pdf (>200k characters)
 
-Con `cell_padding: 2.0` su cu.pdf pag. 1:
-- ✅ "Intermediario:" recuperato per intero
-- ✅ Nessun valore numerico duplicato (172.136 appare 3 volte come atteso)
+With `cell_padding: 2.0` on cu.pdf p. 1:
 
-## [0.3.10] - bugfix: ordine char nelle celle con `top` quasi-uguale
+- ✅ "Intermediario:" recovered in full
+- ✅ No duplicated numeric value (172.136 appears 3 times, as expected)
 
-### Risolto: parole scrambled tipo `iCategora` invece di `Categoria`
+## [0.3.10] - bugfix: character order in cells with near-equal `top`
 
-Su alcuni PDF (esempio: CR Banca d'Italia, pag. 199+ con font piccolo)
-le celle delle tabelle uscivano con char riordinati in modo errato:
+### Fixed: scrambled words such as `iCategora` instead of `Categoria`
 
-| Atteso        | Output errato        |
-| ------------- | -------------------- |
-| `Categoria`   | `iCategora`          |
-| `Localizzazione` | `iLoca li zzazone i` |
+On some PDFs (example: Bank of Italy CR, p. 199+ with a small font),
+table cells came out with characters reordered incorrectly:
+
+| Expected        | Wrong output         |
+| --------------- | -------------------- |
+| `Categoria`     | `iCategora`          |
+| `Localizzazione`| `iLoca li zzazone i` |
 | `Tipo Attività` | `iTpo i Attvt i i à` |
 
-Pattern: il char `i` (e occasionalmente altri con `x-height` sottile)
-veniva spostato all'inizio della parola o disperso.
+Pattern: the character `i` (and occasionally others with a thin
+x-height) was moved to the start of the word or scattered.
 
-### Causa
+### Cause
 
-Regressione dell'ottimizzazione 0.3.9 in `WordExtractor#extract_words`.
+A regression of the 0.3.9 optimization in `WordExtractor#extract_words`.
 
-L'ottimizzazione partiva dal presupposto che, dopo `chars.sort_by { |c|
-[c[:top], c[:x0]] }` + `Cluster.cluster_objects(:top)`, ogni cluster
-"riga" fosse già ordinato internamente per x0 — quindi il `row.sort_by
-{ |c| c[:x0] }` interno era eliminato come ridondante.
+The optimization assumed that, after `chars.sort_by { |c| [c[:top],
+c[:x0]] }` + `Cluster.cluster_objects(:top)`, each "row" cluster was
+already internally sorted by x0 — so the inner `row.sort_by { |c|
+c[:x0] }` was removed as redundant.
 
-Il presupposto è **falso** quando due char della stessa riga visiva hanno
-`top` leggermente diversi (es. la `i` minuscola di `Categoria` ha
-`top=414.9789`, le altre lettere `top=414.9869`, differenza 0.008pt).
-PDFium spesso assegna alle bbox di char ascender/descender top
-leggermente diversi per ragioni di hinting/anti-aliasing. La
-differenza è invisibile graficamente ma rilevante per il sort.
+The assumption is **false** when two characters on the same visual row
+have slightly different `top` values (e.g. the lowercase `i` of
+`Categoria` has `top=414.9789`, the other letters `top=414.9869`, a
+difference of 0.008pt). PDFium often assigns character bboxes slightly
+different ascender/descender tops for hinting/anti-aliasing reasons. The
+difference is graphically invisible but significant for the sort.
 
-Effetto: il sort globale `[top, x0]` mette la `i` (top minore) **prima
-di tutte le altre lettere** della parola, indipendentemente da x0. Il
-`cluster_objects` poi raggruppa tutti i char nella stessa riga (entro
-y_tolerance=3.0), ma non riordina internamente. Quindi all'iterazione
-della riga, la `i` viene letta per prima e finisce all'inizio.
-
-### Fix
-
-Ripristinato il `row_sorted = row.sort_by { |c| c[:x0] }` dentro il
-loop delle righe. L'ottimizzazione 0.3.9 era valida solo per il caso
-di top perfettamente identici; non lo è in generale.
-
-Il costo computazionale aggiunto è marginale: un sort O(n log n) su
-righe corte (~50 char), dominato dall'overhead dell'FFI roundtrip per
-char nella fase precedente. Verificato empiricamente: tempo
-`extract_text` su 20 pagine di complex.pdf invariato (~80ms).
-
-### Test di non-regressione
-
-Tutti i PDF di test continuano a funzionare correttamente:
-
-- ✅ busta_paga.pdf: numeri (`1.993,00`, `2.895,26`), spazi parole (`COGNOME E NOME`, `NETTO BUSTA`)
-- ✅ sample.pdf: Lorem ipsum (2913 char)
-- ✅ complex.pdf (85 pag): 224.645 char totali
-- ✅ cu.pdf pag. 1 (rotation 90°): `BANCA NAZIONALE DEL LAVORO`, `Categoria`, valori numerici
-- ✅ **cu.pdf pag. 199** (rotation 0°, font piccolo): `Categoria`, `Localizzazione`, `Tipo Attività`, `Accordato Operativo` — tutti integri
-
-## [0.3.8] - supporto pagine ruotate (90°, 180°, 270°)
-
-### Risolto: estrazione completamente errata su PDF con `Page#rotation != 0`
-
-Su PDF con pagine ruotate (esempio: CU Banca d'Italia, certificate
-ruotate 90° CW per essere visualizzate landscape ma "logicamente"
-portrait), `Page#chars` ritornava bbox nel sistema **raw** PDFium
-(pre-rotazione), mentre PDFium stesso esponeva `width`/`height`
-**post-rotazione**. Il mismatch causava:
-
-- `top` dei char tutti uguali nella stessa colonna ma `top` diverso
-  tra char della stessa parola (perché il testo era "verticale" nel
-  sistema raw)
-- L'estrazione tabelle produceva celle illeggibili: testo letto
-  carattere per carattere a rovescio (`.A/.P/.S/O/R/O/V/A/L/L/E/D/E/L/A`
-  invece di `BANCA NAZIONALE DEL LAVORO S.P.A.`)
-- I segmenti di linea (`line_segments`) erano nel sistema raw, mentre
-  i char erano (parzialmente) nel sistema post-rotation, rendendo
-  impossibile il match cellule/contenuti
+Effect: the global `[top, x0]` sort places the `i` (smaller top)
+**before all the other letters** of the word, regardless of x0. The
+`cluster_objects` then groups all characters on the same row (within
+y_tolerance=3.0) but does not reorder internally. So when iterating over
+the row, the `i` is read first and ends up at the start.
 
 ### Fix
 
-Tre interventi simmetrici per uniformare il sistema di coordinate:
-
-1. **`compute_chars`**: applica la rotazione della pagina a ogni bbox di
-   char (e all'origin point) prima di restituirli. Le coord sono ora
-   sempre top-down nel sistema della pagina post-rotazione, allineate
-   col rendering visivo. Coerente con pdfplumber.
-
-2. **`line_segments`**: stesso trattamento agli endpoint dei segmenti.
-   Il `build_segment` ora riceve un `rotation_ctx` invece del solo
-   `page_h`, e trasforma entrambi i punti del segmento.
-
-3. **Helper `apply_page_rotation_to_char` e `apply_page_rotation_to_point`**:
-   centralizzano la matematica delle 4 rotazioni canoniche (0°, 90° CW,
-   180°, 270° CW). Per rotation = 0 il comportamento è identico al pre-
-    0.3.8 (semplice bottom-up → top-down).
-
-### Verifica
-
-Test di non-regressione su 4 PDF:
-
-| PDF | Rotation | Risultato |
-| --- | -------: | --------- |
-| busta_paga.pdf (cedolino TeamSystem) | 0° | Invariato — tutti i valori critici (`1.993,00`, `COGNOME E NOME`, `NETTO BUSTA`) preservati |
-| sample.pdf | 0° | Invariato (Lorem ipsum, 2913 char) |
-| complex.pdf (85 pag) | 0° | Invariato (224.645 char totali) |
-| **cu.pdf (CR Banca d'Italia, 226 pag)** | **90° CW** | **Estrazione ora corretta** |
-
-Esempio CU pagina 1 dopo il fix:
-
-```
-=== Tabella 0 ===
-  ['ntermediario:', 'BANCA NAZIONALE DEL LAVORO S.P.A.']
-
-=== Tabella 1 ===
-  Header: ['Categoria', 'Localizzazione', 'Durata/Residua', 'Divisa',
-           'Import Export', 'Tipo Attività', 'Stato Rapporto',
-           'Tipo/Garanzia', 'Ruolo/Affidato', 'Accordato',
-           'Accordato/Operativo', 'Utilizzato', 'Importo/Garantito']
-  Row 1:  ['RISCHI/AUTOLIQUIDANTI', 'TERMOLI', 'FINO A 1/ANNO', ...,
-           '0', '172.136', '172.136', '172.136', '0']
-```
-
-Coincide cella-per-cella con pdfplumber sullo stesso PDF.
-
-### API: nessuna breaking change
-
-Le API pubbliche `Page#chars`, `Page#words`, `Page#text`,
-`Page#line_segments`, `Page#extract_tables` mantengono la stessa
-firma. I valori restituiti **cambiano per i PDF ruotati**: prima
-erano in coord raw (sbagliate), ora in coord post-rotation (corrette,
-allineate al rendering visivo). Per PDF con rotation = 0 (la stragrande
-maggioranza) non c'è alcuna differenza.
-
-## [0.3.7] - bugfix critico: buffer overrun in `read_text_obj_text_from`
-
-### Risolto: IndexError "Memory access offset=0 size=N out of bounds"
-
-`Page#chars` (e di conseguenza `extract_text` / `extract_tables`) crashava
-con `IndexError` quando un text object PDF conteneva una stringa più
-lunga di 128 byte (parole come `consectetuer`, `Phasellus`, frasi intere
-da rivista). Lo stack trace tipico:
-
-```
-IndexError: Memory access offset=0 size=158 out of bounds
-  page.rb:429 in FFI::AbstractMemory#read_bytes
-  page.rb:429 in Page#read_text_obj_text_from
-  page.rb:343 in block in Page#compute_chars
-```
-
-Sui PDF tipici di gestionali italiani (cedolini TeamSystem) il bug NON
-si manifestava perché ogni text object lì contiene 1-4 char (sotto-soglia).
-Si attivava su PDF con text run più lunghi (riviste, articoli, qualsiasi
-PDF generato da TeX/Word/InDesign con kerning conservato a livello di
-parola).
-
-### Causa
-
-Errore mio nell'introdurre `:text_obj_ends_with_space` nella 0.3.4. La
-firma C di `FPDFTextObj_GetText` è:
-
-```c
-unsigned long FPDFTextObj_GetText(FPDF_PAGEOBJECT, FPDF_TEXTPAGE,
-                                  FPDF_WCHAR* buffer, unsigned long length);
-```
-
-dove **`length` è in BYTE** (non in count di uint16) e il return è il
-numero di byte **totali necessari** per scrivere il testo, anche se il
-buffer è troppo piccolo. Stavamo allocando 64 uint16 (= 128 byte),
-passando `64` come length (interpretato da PDFium come 64 BYTE = 32
-uint16!), e poi leggendo `(nbytes - 1) * 2` byte dal buffer dove `nbytes`
-era il return-value, che eccedeva il buffer allocato. Tre bug
-sovrapposti.
-
-### Fix
-
-Pattern probe-then-fetch con clamp difensivo:
-
-1. Provo con buffer ragionevole (256 byte = 128 char UTF-16, copre ~99%
-   dei text obj reali).
-2. Se PDFium ne richiede di più (`needed > buf_capacity`), rialloco
-   esatto e rileggo.
-3. Clamp finale: leggo `min(needed - 2, buf_capacity - 2)` byte, mai
-   oltre quanto effettivamente allocato. Difesa-in-profondità.
-
-Il costo extra di FFI nei casi tipici è zero (il buffer iniziale basta);
-solo per text obj > 256 byte serve una seconda chiamata.
-
-### Bug latenti collaterali fixati
-
-Stesso pattern di buffer-overrun era presente in 3 altri helper aggiunti
-nella 0.3.6:
-
-- `read_mark_name` (buffer 128 uint16)
-- `read_mark_param_key` (buffer 64 uint16)
-- `read_mark_param_string` (buffer 256 uint16)
-
-Mai stati hit in produzione perché i mark name / param sono tipicamente
-brevi ("Span", "Artifact", "MCID"), ma la patologia esisteva.
-Risolti tutti con lo stesso clamp.
-
-Anche `Structure::Attachment#bytes` aveva un pattern analogo: leggeva
-`buf.read_bytes(out_size.read_ulong)` dopo la seconda chiamata, dove
-`out_size` poteva eccedere il buffer. Cambiato a `buf.read_bytes(n)`
-con `n` = dimensione effettivamente allocata.
-
-### Test
-
-Smoke test esteso su `sample.pdf`, `complex.pdf` (60 MB / 85 pagine),
-e `busta_paga.pdf`: tutte le API pubbliche (`chars`, `words`, `text`,
-`line_segments`, `mediabox`, `cropbox`, `annotations`, `images`,
-`marked_content_regions`, `marked_content_inventory`, `extract_tables`,
-`attachments`) verdi su tutti e tre i PDF.
-
-Tutti i valori critici di non-regressione preservati:
-`1.993,00`, `2.895,26`, `COGNOME E NOME`, `MATRICOLA INPS`,
-`NETTO BUSTA`, Lorem ipsum su sample, 224.645 char su complex.
-
-## [0.3.6] - copertura binding pubbliche PDFium
-
-### Aggiunto: 52 binding pubbliche PDFium mancanti
-
-L'inventario sistematico dell'API pubblica PDFium (455 simboli esportati
-dal binario ufficiale) ha rivelato 319 funzioni non ancora attaccate.
-Selezionate 52 ad alto valore per una libreria di estrazione PDF generalista,
-escludendo i setter (mutation), gli event handler form-fill (mouse/keyboard)
-e API niche (thumbnail, JS actions). Tutte sono getter e tutti i tipi
-ritornati sono FFI-safe.
-
-Distribuzione per categoria:
-
-| Categoria              | Binding | Aiuta a... |
-| ---------------------- | ------: | ---------- |
-| Page geometry          | 5       | Sapere mediabox/cropbox/bleed/trim/art (pdfplumber-compat) |
-| PageObject state       | 5       | Filtrare oggetti nascosti, distinguere linee tratteggiate |
-| Marked Content         | 9       | Raggruppare semanticamente char in PDF tagged (PDF/UA) |
-| Catalog/Doc metadata   | 2       | Language, PageMode |
-| Links + hit-test       | 7       | API posizionale `link_at(x, y)`, mapping link → text range |
-| Actions/Destinations   | 6       | Outline navigation completa |
-| Font extras            | 4       | Font data raw, glyph path vettoriale |
-| Text page extras       | 3       | Char ↔ text index mapping per ricerca |
-| Annotation extras      | 7       | Flags/colors/border/AP/file attachment / quad points |
-| Attachment metadata    | 4       | Subtype, key-value custom metadata |
-
-### Nuove API pubbliche di alto livello
-
-- **`Page#mediabox / cropbox / bleedbox / trimbox / artbox`** — accessor
-  pdfplumber-compatibili. Ritornano tuple `[x0, top, x1, bottom]` in
-  coordinate top-down (coerenti con `chars`, `edges`, `cells`). `cropbox`
-  fa fallback automatico su mediabox se assente, come prescrive PDF spec
-  14.11.2. Ritornano `nil` se il box non è definito.
-
-- **`Page#marked_content_regions`** → Hash `{mcid => [page_objects]}`.
-  Raggruppa gli oggetti per Marked Content ID. Vuoto su PDF non-tagged
-  (gestionali italiani); su PDF tagged è il modo più affidabile di
-  ottenere unità semantiche (paragrafi, span, celle tabella).
-
-- **`Page#marked_content_inventory`** → Array di marks con `:obj`,
-  `:mark_name`, `:params`. Per inspection di Tagged PDF (nomi tipici:
-  "Span", "P", "TR", "TD", "Artifact", "Figure").
-
-- **`Page#link_at(x, y)`** — hit-test posizionale: ritorna l'Annotation
-  link che contiene il punto, o `nil`. Per il mapping click sul rendering
-  → URL.
-
-- **`Page#line_segments(include_curves: false, include_dashed: false)`**
-  — nuovo flag `include_dashed`. **Default cambiato a `false`**: le
-  linee tratteggiate sono spesso "guide non-printing" che confondono la
-  detection di cellule tabella. Chi le vuole esplicitamente (drawing
-  extraction completo) passa `include_dashed: true`. I segment hanno
-  ora il campo `:dashed` (bool).
-
-- **PageObject inactive automaticamente skippati** in line_segments:
-  oggetti con Optional Content disabilitato non finiscono più nell'output.
-  Su PDF normali (sempre attivi) il comportamento è invariato.
-
-### Bug fix collaterali
-
-- Rimossa duplicazione di `FPDFText_GetMatrix` (era attached due volte;
-  FFI dava warning ma una sola definizione era effettiva). La binding
-  resta solo nella sezione Text page (riga ~351 di `raw.rb`).
-- Tutti gli helper `read_*` per marked content sono in `begin/rescue
-  Rpdfium::LoadError` per supportare build PDFium più vecchi senza
-  introdurre regressioni.
-
-### Casi border-line text extraction
-
-**Non risolti** sui PDF da gestionali italiani (TeamSystem, Zucchetti):
-parole come `Sede pr i nc` (`Sede principale`), `Imp i ega to`
-(`Impiegato`), `IMPONIBILE INAILMESE` (`IMPONIBILE INAIL MESE`) restano
-spezzate o fuse perché il content stream PDF emette quei char con
-kerning interno (operatori `TJ` con valori intermedi) che PDFium consuma
-internamente per il rendering ma non espone via API C pubblica.
-
-Le binding `FPDFDICT_*` che permetterebbero di accedere al content stream
-raw (e ottenere il kerning, come fa pdfminer.six) **non esistono nel
-PDFium ufficiale di Google/Chromium**. Esistono solo nel fork commerciale
-Pdfium.NET di Patagames Software, non utilizzabile sotto licenza
-open-source. Le 421 simboli `FPDF*` esportati dal binario bblanchon
-sono stati verificati: nessun `FPDFDICT_*`.
-
-I marked content (`FPDFPageObj_GetMark` / `CountMarks`) **sono** la via
-ufficiale per accedere alla struttura semantica, ma richiedono che il
-PDF sia stato generato come Tagged PDF. I PDF da gestionali italiani
-non lo sono. Per PDF da Word/InDesign/InEsign-style tagged, le nuove
-API ora coprono il caso.
-
-## [0.3.5] - Ottimizzazioni
-
-### Migliorato: ridotta computazione e semplificati branch condizionali
-
-## [0.3.4] - advance del glifo, identità text-object, segnale fine-token
-
-### Aggiunto: bindings e nuove proprietà sui char
-
-Tre binding PDFium fondamentali che mancavano:
-
-- **`FPDFFont_GetGlyphWidth(font, glyph_cp, font_size, *float)`** — larghezza
-  nominale del glifo nel font program. Equivale concettualmente alla
-  metric che pdfminer.six legge dal font dictionary del PDF.
-
-- **`FPDFFont_GetAscent` / `FPDFFont_GetDescent`** — metriche font in
-  unità del font program, utili per baseline e leading detection.
-
-- **`FPDFText_GetMatrix(textpage, char_index, *FS_MATRIX)`** — matrice di
-  trasformazione (CTM) applicata al char. Componente `:a` è la scala
-  orizzontale font→pagina.
-
-Queste binding sono ora esposte come API pubbliche di `Rpdfium::Raw` ed
-utilizzate internamente per arricchire ogni char con tre nuove proprietà:
-
-| Proprietà                  | Tipo     | Significato |
-| -------------------------- | -------- | ----------- |
-| `:advance`                 | Float?   | Larghezza nominale del glifo in coordinate pagina, calcolata come `glyph_width × |CTM.a|`. Più stabile della `bbox_width` per char con kerning post-applied. |
-| `:text_obj_id`             | Integer? | Identificatore stabile (pointer address) del text object contenente questo char. Tutti i char dello stesso text obj condividono lo stesso ID — utile per raggruppare semanticamente char correlati a livello content-stream. |
-| `:text_obj_ends_with_space` | bool?  | True se il content stream PDF ha emesso uno spazio finale dopo questo char (es. fine di un token testuale). Segnale di "fine token" dichiarato dal PDF — non sempre coincidente con fine parola visiva, ma utile come indizio. |
-
-### Migliorato: rebuild_word_separators usa i nuovi segnali
-
-`Page#chars` (con `inject_spaces: true`, default) ora ricostruisce i word
-boundary combinando:
-
-1. **Veto duro**: se `prev[:text_obj_ends_with_space] == false`, nessuno
-   spazio viene inserito anche con gap geometrico grande. È kerning
-   interno a un token dichiarato dal PDF.
-
-2. **Threshold dinamica**: per i candidati ammessi (prev fine-token o
-   segnale assente), uso soglia geometrica `gap > 0.3 × max_advance`
-   come default, alzata a `0.7 × max_advance` se il contesto è numerico
-   (cifre o punteggiatura `.`/`,`). Questa euristica preserva i numeri
-   `2.895,26`/`1.993,00` interi mentre recupera la maggior parte degli
-   spazi tra parole.
-
-### Confronto con pdfplumber sul PDF di test
-
-Recuperi netti rispetto alla 0.3.3:
-
-| Cella                  | rpdfium 0.3.3 | rpdfium 0.3.4 | pdfplumber |
-| ---------------------- | ------------: | ------------: | ---------: |
-| COGNOME E NOME         | `COGNOME ENOME` | `COGNOME E NOME` ✓ | `COGNOME E NOME` |
-| MATRICOLA INPS         | `MATRICOLAINPS` | `MATRICOLA INPS` ✓ | `MATRICOLA INPS` |
-| POSIZIONE INAIL        | `POSIZIONE INAIL` ✓ | `POSIZIONE INAIL` ✓ | `POSIZIONE INAIL` |
-| DATA NASCITA           | `DATANASCITA` | `DATA NASCITA` ✓ | `DATA NASCITA` |
-| CODICE FISCALE         | `CODICE FISCALE` ✓ | `CODICE FISCALE` ✓ | `CODICE FISCALE` |
-| COMUNE DI RESIDENZA    | `COMUNEDI RESIDENZA` | `COMUNE DI RESIDENZA` ✓ | `COMUNE DI RESIDENZA` |
-| DATA ASSUNZIONE        | `DATAASSUNZIONE` | `DATA ASSUNZIONE` ✓ | `DATA ASSUNZIONE` |
-| QUALIFICA INPS         | `QUALIFICAINPS` | `QUALIFICA INPS` ✓ | `QUALIFICA INPS` |
-| TIPO RAPPORTO          | `TIPORAPPORTO` | `TIPO RAPPORTO` ✓ | `TIPO RAPPORTO` |
-| RETR. DI FATTO         | `RETR.DI FATTO` | `RETR. DI FATTO` ✓ | `RETR. DI FATTO` |
-| CCNL APPLICATO         | `CCNLAPPLICATO` | `CCNL APPLICATO` ✓ | `CCNL APPLICATO` |
-| ADD. REG. ANNO DOVUTA  | `ADD. REG.ANNODOVUTA` | `ADD. REG. ANNO DOVUTA` ✓ | `ADD. REG. ANNO DOVUTA` |
-| ADD. COM. ANNO DOVUTA  | `ADD. COM.ANNODOVUTA` | `ADD. COM. ANNO DOVUTA` ✓ | `ADD. COM. ANNO DOVUTA` |
-| BONUS IRPEF ANNO       | `BONUS IRPEFANNO` | `BONUS IRPEF ANNO` ✓ | `BONUS IRPEF ANNO` |
-| 2.857,15 (e altri num) | `2.857,15` ✓ | `2.857,15` ✓ | `2.857,15` |
-
-Casi border-line residui (PDFium non emette il segnale fine-token):
-`Sede pr i nc`, `Imp i ega to`, `IMPONIBILE INAILMESE`. Pdfminer.six li
-gestisce perché legge gli operatori `TJ` con kerning dal content stream
-raw, info che PDFium consuma internamente e non espone via API pubblica.
-
-### Test
-
-- 30 unit test + 8 test di integrazione su PDF reale, tutti verdi.
-- Nuovi test: presenza di `:advance`, `:text_obj_id`,
-  `:text_obj_ends_with_space` su char reali.
-
-## [0.3.3] - ricostruzione word boundary geometry-based
-
-### Risolto
-
-**`Page#chars` ricostruisce gli spazi tra parole basandosi sulla geometria
-dei char**, invece di affidarsi agli spazi sintetici di PDFium (che sono
-inaffidabili: PDFium li emette aggressivamente anche tra cifre di numeri).
-
-#### Perché era un problema
-
-PDFium ha due comportamenti patologici sui spazi sintetici:
-
-1. **Bbox degenere**: gli spazi tra parole hanno `top == bottom == baseline`,
-   non in linea con i char circostanti. Il cluster per riga in
-   `extract_text` li scartava, e parole adiacenti come `COGNOME E NOME`
-   si fondevano in `COGNOMEENOME`.
-
-2. **Falsi positivi sui numeri**: PDFium inserisce uno spazio sintetico
-   tra OGNI cifra e la punteggiatura di un numero. `2.895,26` aveva
-   spazi tra `2/.`, `./8`, `5/,`, `,/2`. Se li accettavamo, l'output
-   diventava `2 . 895 , 26`.
-
-#### La fix
-
-Ho buttato via tutti gli spazi sintetici di PDFium e ricostruito i
-word boundary basandomi solo sulla geometria dei char "veri":
-`gap > 0.4 × max(prev_width, next_width)` → spazio. La soglia 0.4 con
-`max_w` (non `avg_w`) è cruciale: i char di punteggiatura come `.` e `,`
-sono più stretti delle cifre, e usare la media gonfierebbe i ratio dei
-gap intra-numero. Usando il max delle due larghezze, il numero
-`2.895,26` ha tutti i gap intra-numero con ratio < 0.35, mentre i veri
-gap inter-parola hanno ratio > 0.45.
-
-Soglia 0.4 tarata empiricamente sui dati TeamSystem reali (1400 casi
-intra + 663 inter), con classificazione corretta al 100% sui casi
-non-borderline.
-
-#### Confronto col PDF di test
-
-| Cella                    | rpdfium 0.3.2 | rpdfium 0.3.3 | pdfplumber  |
-| ------------------------ | ------------: | ------------: | ----------: |
-| Imponibile IRPEF Mese    |    `2.618,84` |    `2.618,84` |  `2.618,84` |
-| Netto Busta              | `NETTOBUSTA/1.993,00` | `NETTOBUSTA/1.993,00` | `NETTO BUSTA/1.993,00` |
-| COGNOME E NOME           | `COGNOMEENOME` | `COGNOME ENOME` | `COGNOME E NOME` |
-| MATRICOLA INPS           | `MATRICOLAINPS` | `MATRICOLAINPS` | `MATRICOLA INPS` |
-| POSIZIONE INAIL          | `POSIZIONEINAIL` | `POSIZIONE INAIL` | `POSIZIONE INAIL` |
-| RETR. DI FATTO           | `RETR.DIFATTO` | `RETR.DI FATTO` | `RETR. DI FATTO` |
-| GIORNO DI RIPOSO         | `GIORNODIRIPOSO` | `GIORNO DI RIPOSO` | `GIORNO DI RIPOSO` |
-| ONERI DED.               |   `ONERIDED.` |    `ONERIDED.` |  `ONERI DED.` |
-
-La 0.3.3 recupera la maggior parte degli spazi inter-parola (vedi
-`POSIZIONE INAIL`, `GIORNO DI RIPOSO`, `RETR.DI FATTO`). Restano persi
-alcuni casi border-line dove il gap visivo è genuinamente piccolo
-(`COGNOME E NOME` che ha `E` molto vicina a `NOME`). Questi sono al
-limite delle possibilità di un algoritmo geometrico puro: pdfminer
-risolve usando l'advance del font dal content stream PDF, info non
-esposta da PDFium.
-
-### API
-
-- **`Page#chars(inject_spaces: true)` ora è il default**. Chi vuole il
-  comportamento "raw PDFium" (tutti i char inclusi gli spazi sintetici
-  aggressivi) passa `inject_spaces: false`.
-- Il vecchio metodo privato `inject_synthetic_spaces` è stato rimosso e
-  rimpiazzato da `rebuild_word_separators` (più descrittivo del nuovo
-  approccio).
-
-## [0.3.2] - punteggiatura preservata nelle celle tabellari
-
-### Risolto
-
-**`Page#chars` ora ritorna bbox "loose" di default** (`loose: true`),
-allineando il comportamento a quello di `pdfminer.six`. Le bbox loose
-sono uniformi per riga: tutti i char della stessa linea logica condividono
-top/bottom proporzionali alla font-size, invece dei tight glyph box che
-PDFium darebbe nativamente.
-
-#### Perché era un problema
-
-Le bbox tight rispettano il singolo glifo. Un `.` (punto decimale) ha
-una bbox alta ~0.85pt, mentre un `5` accanto ne ha ~7pt sulla stessa
-linea. I loro midpoint verticali differiscono di ~3pt — quanto basta a
-far cadere il `.` fuori dalla bbox cella nel filtro `Table#extract`,
-che usa il midpoint per decidere quali char appartengono alla cella
-(stessa scelta di pdfplumber).
-
-Effetto sul cedolino TeamSystem: valori come `1.993,00`, `2.857,15`,
-`7.788,60` venivano estratti come `1 993 00`, `2 857 15`, `7 788 60` —
-la punteggiatura cadeva fuori. Con loose box, tutti i char della riga
-hanno lo stesso midpoint verticale, e i punti/virgole arrivano dentro
-la cella.
-
-#### Confronto con pdfplumber
-
-Sul cedolino di test `busta_paga.pdf`:
-
-| Cella                | rpdfium 0.3.1 | rpdfium 0.3.2 | pdfplumber |
-| -------------------- | ------------: | ------------: | ---------: |
-| Netto Busta          |       `1 993 00` |   `1.993,00` |  `1.993,00` |
-| Imponibile IRPEF MESE |    `2 618 84` |   `2.618,84` |  `2.618,84` |
-| TFR Spettante        |       `3 446 15` |   `3.446,15` |  `3.446,15` |
-| Retr. di Fatto       |       `2 857 15` |   `2.857,15` |  `2.857,15` |
-
-### Aggiunto
-
-- **`Page#chars(inject_spaces: true)`**: opt-in che inietta spazi
-  sintetici nei gap orizzontali significativi (gap > 0.85 × char width)
-  della stessa riga. Approssima il comportamento di pdfminer.six per
-  parole adiacenti che PDFium fonderebbe per via del kerning. Può
-  produrre falsi positivi su font condensati. **Default `false`**:
-  preferiamo "non spezzare parole valide" rispetto a "catturare ogni
-  spazio mancante", in linea con la filosofia "quello che PDFium emette
-  è la verità".
-
-- Helper privato `Page#inject_synthetic_spaces` esposto come API
-  pubblica per chi vuole post-processare i char.
-
-- Cache di `Page#chars` per (loose, inject_spaces): ricostruire
-  l'array di char è O(n) di chiamate FFI, costoso su pagine grosse.
-
-### Limitazioni note
-
-- Sul cedolino di test, `inject_spaces: true` recupera ~80% degli
-  spazi inter-parola persi (es. `NETTO BUSTA`), ma introduce qualche
-  falso positivo (es. `Sede pr incipale`). Questo è un trade-off
-  intrinseco di PDFium che non espone l'advance del font dal content
-  stream, l'unica metrica davvero affidabile per decidere "spazio o no".
-  Per estrazione testuale che richiede spazi perfetti, considerare
-  pdfminer.six (e quindi pdfplumber); per estrazione tabellare con
-  punteggiatura preservata, rpdfium è ora allineato.
-
-## [0.3.1] - discesa nei Form XObjects
-
-### Risolto
-
-**`Page#line_segments` ora discende ricorsivamente nei Form XObjects**
-applicando la matrice di trasformazione affine che li posiziona nello spazio
-pagina. Prima di questa fix, su PDF dove la grafica della pagina era
-incapsulata in un singolo Form XObject (PDF generati da TeamSystem,
-Zucchetti e altri gestionali italiani; molti template Word/Excel),
-`line_segments` ritornava un Array vuoto anche se visivamente la pagina
-era piena di linee e bordi cella.
-
-Conseguenza diretta: `Page#vertical_lines`, `Page#horizontal_lines`, e la
-strategia `:lines` di `Table::Extractor` ora funzionano correttamente su
-questi PDF.
-
-Per il cedolino TeamSystem di test (`busta_paga.pdf`), i numeri:
-
-| Metrica           | prima 0.3.1 | dopo 0.3.1 | pdfplumber |
-| ----------------- | ----------: | ---------: | ---------: |
-| line_segments     |           0 |        525 |   420 (\*) |
-| horizontal_lines  |           0 |        375 |        210 |
-| vertical_lines    |           0 |        437 |        210 |
-| tabelle estratte  |           1 (\*\*) |     1 |          1 |
-| dimensione tab    |   1×N nonsens |  28×44 |      28×44 |
-
-(\*) pdfplumber decompone i 105 rettangoli in 4 lati ciascuno =
-420 edges; rpdfium attualmente li conta con duplicazione (le 4 linee del
-contour + il close-path), per questo 525 invece di 420. La detection di
-celle non ne risente perché lo snap+join collassa i duplicati.
-(\*\*) Senza linee, rpdfium 0.3.0 con strategia `:lines` non trovava
-tabelle e cadeva nel fallback `:text`, producendo una "tabella" gigantesca
-che copriva l'intera pagina.
-
-### Aggiunto
-
-- Bindings `FPDFFormObj_CountObjects` e `FPDFFormObj_GetObject` per
-  iterare i child di un Form XObject.
-- Helpers privati `compose_matrix`, `apply_matrix`, `read_object_matrix`
-  per la composizione di trasformazioni affini PDF.
-- Test di integrazione su PDF reale (`busta_paga.pdf`) che verifica:
-  numero minimo di line_segments, struttura della tabella anagrafica,
-  conteggio chars nel range atteso.
-
-### Compatibilità
-
-- Nessuna API breaking. `line_segments` mantiene la stessa firma e lo
-  stesso formato di output.
-- I PDF già funzionanti in 0.3.0 (con grafica top-level) continuano a
-  funzionare identici: la discesa nei Form XObjects parte dal CTM
-  identità, quindi a livello top non c'è cambiamento di coordinate.
-
-## [0.3.0] - estrazione tabelle riallineata 1:1 a pdfplumber
-
-### Riscritto da zero
-
-L'intero pipeline tabellare è stato riscritto seguendo il sorgente di
-[pdfplumber/table.py](https://github.com/jsvine/pdfplumber/blob/stable/pdfplumber/table.py)
-e [pdfplumber/utils/text.py](https://github.com/jsvine/pdfplumber/blob/stable/pdfplumber/utils/text.py).
-La versione 0.2.x aveva una serie di approssimazioni che producevano errori
-sistematici di estrazione su PDF con layout free-form (es. cedolini
-TeamSystem). I bug fix specifici:
-
-1. **`words_to_edges_v` clusterizza ora tre coordinate (`x0`, `x1`, centro)**
-   invece di solo `x0`. Le colonne numeriche right-aligned (importi
-   `1.234,56` allineati a destra) erano invisibili al clustering basato su
-   `x0`. Aggiunta dedupe per overlap di bbox: cluster sovrapposti tengono
-   solo il più popolato.
-
-2. **`words_to_edges_h` emette DUE edges per riga** (top + bottom della
-   bbox del cluster). Senza il bottom edge, l'ultima riga di una tabella
-   rilevata da text-strategy non veniva mai chiusa.
-
-3. **`intersections_to_cells` usa l'algoritmo `find_smallest_cell`** di
-   pdfplumber con verifica `edge_connect` su identità d'oggetto degli
-   edge, non su sole coordinate. Due intersezioni con la stessa `x` ma
-   appartenenti a edge verticali distinti non producono più cella spuria.
-
-4. **`cells_to_tables` usa il fixed-point su corner condivisi**, non più
-   adjacency check coordinate-based. Filtro single-cell per scartare rumore.
-
-5. **Estrazione testo da cella usa midpoint del char**, non bbox-clip via
-   `FPDFText_GetBoundedText`. Il midpoint è il criterio identico di
-   pdfplumber, e risolve la concatenazione cross-cell ("RETRIBUZIONEUTILE")
-   che si verificava su PDF dove i char di celle adiacenti hanno bbox
-   leggermente sovrapposti.
-
-### Aggiunto
-
-- **`Rpdfium::Util::Cluster`** (nuovo modulo): primitive di clustering 1D
-  agglomerativo single-linkage usate da tutto il pipeline (`cluster_list`,
-  `cluster_objects`, `objects_to_bbox`, `bbox_overlap`).
-
-- **`Rpdfium::Util::WordExtractor`** (nuova classe): estrazione words da
-  char fedele a `pdfplumber.WordExtractor`. Supporta `x_tolerance`,
-  `y_tolerance`, `keep_blank_chars`, `extra_attrs` (split su cambio
-  font/size).
-
-- **`Rpdfium::Util::TextExtraction.extract_text`** (nuovo modulo): converte
-  un Array di char in stringa, raggruppando per riga via clustering del
-  `top` e per parola via gap orizzontale > x_tolerance. Equivalente a
-  `pdfplumber.utils.text.extract_text(layout=False)`.
-
-- **`Rpdfium::Table::Table`** (nuova classe): rappresenta una tabella
-  estratta. Espone `.cells`, `.rows`, `.columns`, `.bbox`, `.extract`.
-  L'API combacia con `pdfplumber.table.Table`.
-
-- **`edge_min_length_prefilter`** (default 1.0): filtra edges troppo corti
-  prima dello snap+join, per ridurre rumore da micro-segmenti vettoriali.
-
-- **`Rpdfium.extract_tables(..., keep_blank_rows: false)`** filtra di
-  default le righe completamente vuote che la strategia `:text` produce
-  per costruzione (effetto del doppio edge top+bottom).
-
-### API: breaking changes minori
-
-- Le strategy del `Extractor` validano l'input: `vertical_strategy` e
-  `horizontal_strategy` accettano solo `:lines` / `:lines_strict` /
-  `:text` / `:explicit`. Valori invalidi alzano `ArgumentError`.
-
-- L'oggetto restituito da `Extractor#tables` (e dall'alias `find`) non è
-  più un Hash con `:bbox`/`:rows`/`:cols`/`:grid`, ma un'istanza di
-  `Rpdfium::Table::Table`. Chi usa `Rpdfium.extract_tables` (top-level)
-  vede solo strutture base (Hash con `:page` e `:rows`), invariato.
-
-- `Edges.snap_horizontal` / `Edges.snap_vertical` / `Edges.join_horizontal`
-  / `Edges.join_vertical` / `Edges.intersections` (firma vecchia) /
-  `Cells.from_intersections` / `Cells.group_into_tables` rimossi. I
-  rimpiazzi sono `snap_edges`, `join_edge_group`, `merge_edges`,
-  `filter_edges`, `edges_to_intersections`, `intersections_to_cells`,
-  `cells_to_tables` con segnature 1:1 da pdfplumber.
-
-### Fix lifecycle (race finalizer)
-
-Document/Page/TextPage/Annotation/Search/Form::Environment usano ora un
-**state Hash condiviso tra istanza e finalizer**. Tre proprietà
-acquisite:
-
-- **Idempotenza** (`@state[:closed]` flag): nessuna doppia chiamata a
-  `FPDF_CloseDocument`/`FPDF_ClosePage`/etc anche se sia `close()`
-  esplicito che il GC partono.
-- **No-leak della closure**: il finalizer cattura un Hash, non `self`.
-  L'istanza può essere raccolta liberamente dal GC.
-- **Disarmo esplicito**: `close()` chiama `ObjectSpace.undefine_finalizer`
-  per impedire qualsiasi esecuzione tardiva del finalizer su un handle
-  già liberato.
-
-Risolve il segfault `FPDF_CloseDocument` durante introspezione del
-debugger su una collection di tabelle (riportato dall'utente con
-ruby-debug-ide).
-
-### Fix `candidate_paths` (FFI)
-
-Su macOS, FFI auto-appendeva `.dylib` a path `.so`, causando il fallimento
-del caricamento. Ora `candidate_paths` filtra i nomi di sistema per OS
-host: solo `.dylib` su macOS, solo `.so` su Linux, solo `.dll` su Windows.
-Inoltre se `ENV["PDFIUM_LIBRARY_PATH"]` o `Rpdfium::Binary.library_path`
-è impostato, viene usato come unico path: nessun fallback automatico.
-
-### Test
-
-- 30 unit test (60 asserzioni) coprono cluster primitives, word
-  extraction, edges (snap/join/filter/intersections/words_to_edges_v/h),
-  cells (smallest-cell + edge identity check), table (rows/columns/bbox/
-  extract con midpoint), extractor end-to-end con FakePage, regressione
-  TeamSystem (no più cross-cell concatenation; words_to_edges_v sui dati
-  reali di un cedolino italiano in formato TeamSystem).
-
-## [0.2.1] - allineamento PDFium chromium/6611+
-
-### Cambiato
-
-- **`FPDFText_GetTextRenderMode(text_page, char_index)` rimossa dalle
-  bindings.** Era stata rimossa upstream da PDFium in chromium/6611
-  (luglio 2024) — chiamarla causa `undefined symbol` con i build recenti
-  di pdfium-binaries. Riferimenti:
-  [pypdfium2#335](https://github.com/pypdfium2-team/pypdfium2/issues/335),
-  [pdfium-render#151](https://github.com/ajrcarey/pdfium-render/issues/151).
-- `Page#chars` ora ottiene `:render_mode` via il path nuovo: prima
-  risolve il text object che contiene il char con
-  `FPDFText_GetTextObject`, poi legge il render mode con
-  `FPDFTextObj_GetTextRenderMode` (che era già presente nella binding
-  ma non utilizzato a char-level). Una cache interna evita lookup
-  ripetuti — overhead invariato anche su pagine con migliaia di char.
-- Su build PDFium antichi (< chromium/6611) che non espongono
-  `FPDFText_GetTextObject`, `:render_mode` ricade a `nil` invece di
-  far esplodere l'estrazione.
-
-### Aggiunto
-
-- Binding di **`FPDFText_GetTextObject(text_page, char_index)`** —
-  rimpiazzo upstream per ottenere il text object di un char.
-- Binding di **`FPDFFont_GetBaseFontName(font, buffer, size)`** —
-  ritorna il `BaseFont` entry dal dict del font (può includere prefissi
-  di subset come `ABCDEF+Helvetica`). Firma `c_size_t` invece di
-  `c_ulong`, secondo l'header pubblico aggiornato.
-- Binding di **`FPDFFont_GetFamilyName(font, buffer, size)`** — ritorna
-  il nome famiglia "pulito".
-- `FPDFFont_GetFontName` mantenuta come fallback per compatibilità con
-  build PDFium più vecchi.
-
-## [0.2.0] - parità con pypdfium2
-
-Espansione massiccia. La superficie di API copre ora i casi d'uso principali
-di pypdfium2 più l'estrazione tabellare in stile pdfplumber.
-
-### Aggiunto — bindings FFI
-
-- **Path segments reali** via `FPDFPath_CountSegments`,
-  `FPDFPath_GetPathSegment`, `FPDFPathSegment_GetPoint/GetType/GetClose`.
-  Iterazione MOVETO/LINETO/BEZIERTO con state-machine corretta per
-  `closepath`, sostituendo l'approccio "bbox del path" della 0.1.0.
-- **Image objects**: `FPDFImageObj_GetImageMetadata`,
-  `GetImagePixelSize`, `GetBitmap`, `GetRenderedBitmap`,
-  `GetImageDataDecoded`, `GetImageDataRaw`, `GetImageFilterCount`,
-  `GetImageFilter`.
-- **Annotazioni**: `FPDFPage_GetAnnotCount/GetAnnot/CloseAnnot`,
-  `FPDFAnnot_GetSubtype/GetRect/GetStringValue/HasKey/GetLink`,
-  `FPDFLink_GetAction/GetDest/GetURL`, `FPDFAction_GetType/GetURIPath`.
-- **Form fields** (read-only): `FPDFDOC_InitFormFillEnvironment` con
-  `FPDF_FORMFILLINFO` versione 2 minimale, `FPDF_FFLDraw`,
-  `FPDFAnnot_GetFormFieldType/Name/Value/Flags/IsChecked`,
-  `GetOptionCount/GetOptionLabel`.
-- **Bookmarks** (outline): `FPDFBookmark_GetFirstChild/GetNextSibling/
-  GetTitle/GetDest`, `FPDFDest_GetDestPageIndex`.
-- **Attachments**: `FPDFDoc_GetAttachmentCount/GetAttachment`,
-  `FPDFAttachment_GetName/GetFile`.
-- **Structure tree** (PDF tagged): `FPDF_StructTree_GetForPage`,
-  `CountChildren`, `GetChildAtIndex`, `GetType`, `GetTitle`.
-- **Search interna**: `FPDFText_FindStart/FindNext/FindPrev/FindClose`,
-  `GetSchResultIndex`, `GetSchCount`.
-- **Char metadata estesa**: `FPDFText_GetLooseCharBox`,
-  `GetCharOrigin`, `GetCharAngle`, `IsGenerated`, `IsHyphen`,
-  `HasUnicodeMapError`, `GetFontInfo`, `GetTextRenderMode`, `GetMatrix`.
-- **Document**: `FPDF_GetMetaText`, `GetDocPermissions`, `GetFileVersion`,
-  `GetFormType`, `GetPageLabel`.
-- **Bitmap**: `CreateEx`, `RenderPageBitmapWithMatrix`, format detection.
-- **Page boxes**: `MediaBox`, `CropBox`, `BleedBox`, `TrimBox`, `ArtBox`.
-
-### Aggiunto — wrapper di alto livello
-
-- `Rpdfium::Document` ora espone: `metadata` (Title/Author/Producer/...),
-  `permissions` (hash di booleans per print/copy/modify/...), `file_version`,
-  `form_type`, `has_forms?`, `outline`, `attachments`, `page_label(idx)`.
-- `Rpdfium::Page` ora espone:
-  - `box(:media|:crop|:bleed|:trim|:art)`
-  - `chars(loose: false)` — array di hash con `char`, `codepoint`, bbox,
-    `origin_x/y`, `angle`, `fontsize`, `font`, `weight`, `render_mode`,
-    `generated`, `hyphen`, `unicode_error`
-  - `words(x_tolerance:, y_tolerance:)` — clustering layout-aware
-  - `text_in_bbox(left:, top:, right:, bottom:)` — top-down coords
-  - `line_segments` — segmenti vettoriali REALI dai path objects
-  - `horizontal_lines`, `vertical_lines` — derivati da `line_segments`
-  - `images` — `Image::Embedded` array
-  - `annotations`, `links`, `form_fields`
-  - `render(scale:, rotate:, output: :rgba|:bgra|:gray, include_annotations:,
-    include_forms:, background:)`
-  - `render_to_png(path)` — pure-Ruby, zero dipendenze esterne
-  - `search(query, **opts)` — internal full-text search
-- `Rpdfium::Image::Embedded` con `metadata`, `pixel_size`, `bbox`,
-  `filters`, `raw_bytes`, `decoded_bytes`, `render_bitmap`, `save(path)`
-  (passthrough JPEG quando il filter è `DCTDecode`).
-- `Rpdfium::Annotation` con `subtype`, `bbox`, `[]`, `link_uri`,
-  `link_dest_page`.
-- `Rpdfium::Form::{Environment, Field}` con tipi mappati (textfield,
-  checkbox, radiobutton, combobox, listbox, signature, ...) e
-  `readonly?`, `required?`, `checked?`, `options`.
-- `Rpdfium::Search` con `Enumerable`, ogni match include rects per riga.
-- `Rpdfium::Outline` con tree ricorsivo, `flatten` preorder, `to_h`.
-- `Rpdfium::Attachment` con `name`, `bytes`, `save(path)`.
-
-### Aggiunto — estrazione tabellare
-
-- Pipeline pdfplumber-style:
-  1. raccolta edges (strategie `:lines`, `:text`, `:explicit`,
-     `:lines_strict`)
-  2. snap (cluster collineari → coord media)
-  3. join (segmenti contigui → unico edge)
-  4. filter per `edge_min_length`
-  5. intersezioni h × v entro `intersection_tolerance`
-  6. costruzione celle (4 angoli intersezioni)
-  7. raggruppamento celle adiacenti (union-find) in tabelle
-  8. estrazione testo per cella via `FPDFText_GetBoundedText`
-- Tutti i parametri di pdfplumber supportati: `snap_tolerance` (con
-  varianti `_x`, `_y`), `join_tolerance`, `intersection_tolerance`,
-  `edge_min_length`, `min_words_vertical`, `min_words_horizontal`,
-  `text_tolerance`, `keep_blank_chars`.
-- `auto_fallback` opzionale: se `:lines` non produce nulla, riprova con
-  `:text`.
-- `Rpdfium::Table::Debugger.visualize(page, output_path)` — overlay
-  visivo (linee rosse, intersezioni verdi, tabelle blu trasparenti)
-  equivalente di `pdfplumber.Page.debug_tablefinder()`. Implementato in
-  Ruby puro con canvas RGBA, Bresenham, alpha blending.
-
-### Aggiunto — utility
-
-- `Rpdfium::IO::PNG` — writer PNG puro Ruby (zero deps), supporta
-  RGBA 8bpc. CRC32 corretti, deflate via stdlib `zlib`.
-- `Raw.read_utf16_string` helper centralizzato per il pattern
-  probe-then-fetch di PDFium (che ritorna stringhe UTF-16LE).
-
-### Cambiato
-
-- Coordinate top-down ovunque nelle API pubbliche (PDFium internamente
-  è bottom-up; conversione fatta una volta sola per evitare confusione).
-- Il documento mantiene una cache delle pagine: `doc.page(0)` ritorna
-  sempre la stessa istanza (le pagine sono read-only nel nostro modello).
-- Init/destroy della libreria ora è thread-safe (`Mutex`) e idempotente.
-- `Document#close` rilascia in cascata: form env → pagine cached → doc.
-
-## [0.1.0]
-
-Prima release: bindings minimali, text/render base, table extractor
-embrionale.
+Restored the `row_sorted = row.sort_by { |c| c[:x0] }` inside the row
+loop. The 0.3.9 optimization was valid only for the case of perfectly
+identical tops; it is not valid in general.
+
+The added computational cost is marginal: an O(n log n) sort on short
+rows (~50 characters), dominated by the per-character FFI roundtrip
+overhead of the preceding phase. Empirically verified: `extract_text`
+time on 20 pages of complex.pdf unchanged (~80ms).
+
+### Regression testing
+
+All test PDFs continue to work correctly:
+
+- ✅ busta_paga.pdf: numbers (`1.993,00`, `2.895,26`), word spacing (`COGNOME E NOME`, `NETTO BUSTA`)
+- ✅ sample.pdf: Lorem ipsum (2913 characters)
+- ✅ complex.pdf (85 pages): 224,645 characters total
+- ✅ cu.pdf p. 1 (rotation 90°): `BANCA NAZIONALE DEL LAVORO`, `Categoria`, numeric values
+- ✅ **cu.pdf p. 199** (rotation 0°, small font): `Categoria`, `Localizzazione`, `Tipo Attività`, `Accordato Operativo` — all intact

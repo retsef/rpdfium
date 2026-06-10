@@ -2,10 +2,10 @@
 
 module Rpdfium
   module Form
-    # FPDF_FORMHANDLE è necessario per leggere widget annotations.
-    # In modalità read-only basta inizializzarlo con una FORMFILLINFO minimale
-    # (version=2, callbacks NULL). PDFium chiama i callback solo durante
-    # interazione utente o JavaScript, che noi non usiamo.
+    # FPDF_FORMHANDLE is required to read widget annotations.
+    # In read-only mode it is enough to initialize it with a minimal FORMFILLINFO
+    # (version=2, callbacks NULL). PDFium invokes the callbacks only during
+    # user interaction or JavaScript, which we do not use.
     class Environment
       attr_reader :document
 
@@ -13,7 +13,7 @@ module Rpdfium
         @document = document
         @info = Raw::FPDF_FORMFILLINFO.new
         @info[:version] = 2
-        # Tutti i puntatori restano NULL (default di FFI::Struct).
+        # All pointers remain NULL (the FFI::Struct default).
         handle = Raw.FPDFDOC_InitFormFillEnvironment(document.handle, @info)
         if handle.null?
           raise FormError,
@@ -48,8 +48,8 @@ module Rpdfium
       end
     end
 
-    # Wrapper per un widget di form. Si costruisce a partire da
-    # un'annotazione di tipo :widget e l'env del documento.
+    # Wrapper for a form widget. It is built from
+    # an annotation of type :widget and the document env.
     class Field
       TYPES = {
         Raw::FPDF_FORMFIELD_UNKNOWN     => :unknown,
@@ -89,14 +89,14 @@ module Rpdfium
       def readonly?; (flags & (1 << 0)).positive?; end
       def required?; (flags & (1 << 1)).positive?; end
 
-      # Per checkbox e radio
+      # For checkbox and radio
       def checked?
         return false unless %i[checkbox radiobutton].include?(type)
 
         Raw.FPDFAnnot_IsChecked(@env.handle, @annotation.handle) == 1
       end
 
-      # Per combobox/listbox
+      # For combobox/listbox
       def options
         n = Raw.FPDFAnnot_GetOptionCount(@env.handle, @annotation.handle)
         return [] if n <= 0

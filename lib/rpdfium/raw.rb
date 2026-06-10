@@ -4,27 +4,27 @@ require "ffi"
 require "rbconfig"
 
 module Rpdfium
-  # Layer 1: bindings FFI grezzi alle API C di PDFium.
-  # Mappa 1:1 con i nomi originali. Usare le classi wrapper per il codice
-  # applicativo. Le API "Experimental" di PDFium sono marcate nei commenti:
-  # in teoria potrebbero cambiare, in pratica sono stabili da anni.
+  # Layer 1: raw FFI bindings to the PDFium C API.
+  # 1:1 mapping with the original names. Use the wrapper classes for
+  # application code. PDFium "Experimental" APIs are marked in the comments:
+  # in theory they could change, in practice they have been stable for years.
   module Raw
     extend FFI::Library
 
-    # Costruisce la lista di candidati che `ffi_lib` proverà in ordine.
+    # Builds the list of candidates that `ffi_lib` will try in order.
     #
-    # ATTENZIONE: FFI auto-appende l'estensione "naturale" della piattaforma
-    # (.dylib su macOS, .so su linux, .dll su windows) quando il path passato
-    # non termina già con un'estensione conosciuta. Quindi se passiamo
-    # `libpdfium.so` su macOS, FFI cerca `libpdfium.so.dylib` — assurdo ma
-    # documentato. Per evitarlo, filtriamo i nomi system_library_names per
-    # OS host.
+    # WARNING: FFI auto-appends the platform's "natural" extension
+    # (.dylib on macOS, .so on Linux, .dll on Windows) when the supplied path
+    # does not already end with a known extension. Therefore, if we pass
+    # `libpdfium.so` on macOS, FFI looks for `libpdfium.so.dylib` — absurd but
+    # documented. To avoid this, we filter the system_library_names by
+    # host OS.
     #
-    # Inoltre: ENV["PDFIUM_LIBRARY_PATH"] e Rpdfium::Binary.library_path sono
-    # path ASSOLUTI/ESPLICITI: se non vengono trovati, NON facciamo fallback
-    # a nomi di sistema. Restituiamo subito un array di un solo path: in
-    # quel caso ffi_lib o riesce subito, o lancia LoadError chiaro
-    # (è ciò che vuole l'utente — gli ha dato un path esplicito).
+    # Additionally: ENV["PDFIUM_LIBRARY_PATH"] and Rpdfium::Binary.library_path
+    # are ABSOLUTE/EXPLICIT paths: if they are not found, we do NOT fall back
+    # to system names. We immediately return an array of a single path: in
+    # that case ffi_lib either succeeds right away, or raises a clear LoadError
+    # (which is what the user wants — they provided an explicit path).
     def self.candidate_paths
       explicit = ENV["PDFIUM_LIBRARY_PATH"]
       return [explicit] if explicit && !explicit.empty?
@@ -37,10 +37,10 @@ module Rpdfium
       system_library_names
     end
 
-    # Nomi "di sistema" filtrati per OS host. Manteniamo `pdfium` /
-    # `libpdfium` (senza estensione) per primi: FFI auto-appende l'ext giusta.
-    # I nomi con estensione vengono SOLO se matchano l'OS host, così evitiamo
-    # il bug di doppia estensione.
+    # "System" names filtered by host OS. We keep `pdfium` /
+    # `libpdfium` (without extension) first: FFI auto-appends the right ext.
+    # Names with an extension are included ONLY if they match the host OS, so
+    # we avoid the double-extension bug.
     def self.system_library_names
       base = %w[pdfium libpdfium]
       host = host_os
@@ -69,21 +69,21 @@ module Rpdfium
 
     begin
       ffi_lib(*candidate_paths)
-      ffi_convention :default # cdecl ovunque, anche su Win64 (build bblanchon)
+      ffi_convention :default # cdecl everywhere, even on Win64 (bblanchon build)
       @native_loaded = true
     rescue ::LoadError, ::RuntimeError => e
-      # Cadiamo in modalità "stub": le attach_function generano stub che
-      # sollevano Rpdfium::LoadError alla prima invocazione. Permette di
-      # caricare la gemma per usare i moduli puri-Ruby (Edges, Cells, PNG)
-      # senza dover avere PDFium installato.
+      # We fall back to "stub" mode: the attach_function calls generate stubs
+      # that raise Rpdfium::LoadError on first invocation. This allows the gem
+      # to be loaded in order to use the pure-Ruby modules (Edges, Cells, PNG)
+      # without having PDFium installed.
       @load_error = e
-      ffi_lib_flags :now  # no-op senza ffi_lib, ma documenta intent
+      ffi_lib_flags :now  # no-op without ffi_lib, but documents intent
     end
 
-    # Wrap di attach_function tollerante: se il binding fallisce (libreria
-    # non caricata, simbolo non presente in questa versione di PDFium),
-    # genera comunque un metodo che alza un errore chiaro al call site,
-    # invece di far esplodere il `require`.
+    # Tolerant attach_function wrapper: if the binding fails (library
+    # not loaded, symbol not present in this version of PDFium),
+    # it still generates a method that raises a clear error at the call site,
+    # instead of blowing up the `require`.
     def self.attach_function(name, *args)
       super
     rescue FFI::NotFoundError, RuntimeError => e
@@ -94,8 +94,8 @@ module Rpdfium
     end
 
     unless @native_loaded
-      # Override di attach_function quando la libreria non si è caricata:
-      # non chiamare super (che esploderebbe), genera direttamente lo stub.
+      # Override of attach_function when the library failed to load:
+      # do not call super (which would blow up), generate the stub directly.
       def self.attach_function(name, *_args)
         err = @load_error
         define_singleton_method(name) do |*_a|
@@ -110,7 +110,7 @@ module Rpdfium
     end
 
     # =========================================================================
-    # Tipi opachi
+    # Opaque types
     # =========================================================================
     typedef :pointer, :FPDF_DOCUMENT
     typedef :pointer, :FPDF_PAGE
@@ -135,7 +135,7 @@ module Rpdfium
     typedef :ushort,  :FPDF_WCHAR
 
     # =========================================================================
-    # Strutture C
+    # C structures
     # =========================================================================
     class FS_RECTF < FFI::Struct
       layout :left,   :float,
@@ -145,7 +145,7 @@ module Rpdfium
     end
 
     class FS_MATRIX < FFI::Struct
-      # PDF matrix: [a b 0; c d 0; e f 1] (row-major in PDF; FFI segue ordine campi)
+      # PDF matrix: [a b 0; c d 0; e f 1] (row-major in PDF; FFI follows field order)
       layout :a, :float, :b, :float,
              :c, :float, :d, :float,
              :e, :float, :f, :float
@@ -177,7 +177,7 @@ module Rpdfium
     end
 
     # =========================================================================
-    # Costanti
+    # Constants
     # =========================================================================
     # Bitmap formats
     FPDFBitmap_Unknown = 0
@@ -191,7 +191,7 @@ module Rpdfium
     FPDF_LCD_TEXT       = 0x02
     FPDF_NO_NATIVETEXT  = 0x04
     FPDF_GRAYSCALE      = 0x08
-    FPDF_REVERSE_BYTE_ORDER = 0x10  # → RGBA invece di BGRA
+    FPDF_REVERSE_BYTE_ORDER = 0x10  # → RGBA instead of BGRA
     FPDF_NO_GDIPLUS     = 0x40
     FPDF_PRINTING       = 0x800
     FPDF_RENDER_NO_SMOOTHTEXT  = 0x1000
@@ -254,7 +254,7 @@ module Rpdfium
       FPDF_ANNOT_WIDGET => "Widget", FPDF_ANNOT_REDACT => "Redact"
     }.freeze
 
-    # Form field types (per widget annotations)
+    # Form field types (for widget annotations)
     FPDF_FORMFIELD_UNKNOWN     = 0
     FPDF_FORMFIELD_PUSHBUTTON  = 1
     FPDF_FORMFIELD_CHECKBOX    = 2
@@ -335,18 +335,18 @@ module Rpdfium
     attach_function :FPDFText_GetFontWeight, %i[FPDF_TEXTPAGE int], :int
     attach_function :FPDFText_GetFontInfo,
                     %i[FPDF_TEXTPAGE int pointer ulong pointer], :ulong
-    # NOTE: FPDFText_GetTextRenderMode(text_page, char_index) è stato RIMOSSO
-    # da PDFium in chromium/6611 (luglio 2024). Il rimpiazzo è in due passi:
+    # NOTE: FPDFText_GetTextRenderMode(text_page, char_index) was REMOVED
+    # from PDFium in chromium/6611 (July 2024). The replacement is two steps:
     #   1. FPDFText_GetTextObject(text_page, char_index) → FPDF_PAGEOBJECT
     #   2. FPDFTextObj_GetTextRenderMode(page_object)    → int
-    # Wrapper di alto livello: vedi Page#chars (campo :render_mode).
-    # Riferimento: pypdfium2 issue #335, pdfium-render issue #151.
+    # High-level wrapper: see Page#chars (the :render_mode field).
+    # Reference: pypdfium2 issue #335, pdfium-render issue #151.
     attach_function :FPDFText_GetTextObject,
                     %i[FPDF_TEXTPAGE int], :FPDF_PAGEOBJECT
     attach_function :FPDFText_GetCharBox,
                     %i[FPDF_TEXTPAGE int pointer pointer pointer pointer],
                     :FPDF_BOOL
-    # "Loose" char box: bbox proporzionale alla font size, più stabile per layout
+    # "Loose" char box: bbox proportional to the font size, more stable for layout
     attach_function :FPDFText_GetLooseCharBox,
                     %i[FPDF_TEXTPAGE int pointer], :FPDF_BOOL
     attach_function :FPDFText_GetMatrix,
@@ -398,7 +398,7 @@ module Rpdfium
     attach_function :FPDF_RenderPageBitmap,
                     %i[FPDF_BITMAP FPDF_PAGE int int int int int int],
                     :void
-    # Rendering con matrice 2x3 + clipping (per scaling/rotation arbitraria)
+    # Rendering with a 2x3 matrix + clipping (for arbitrary scaling/rotation)
     attach_function :FPDF_RenderPageBitmapWithMatrix,
                     %i[FPDF_BITMAP FPDF_PAGE pointer pointer int],
                     :void
@@ -426,22 +426,22 @@ module Rpdfium
     attach_function :FPDFPageObj_GetLineJoin,  %i[FPDF_PAGEOBJECT], :int
 
     # =========================================================================
-    # Form XObjects: contenitori che incapsulano grafica (linee, rect, testo)
-    # come "subroutine grafica" riutilizzabile. Nei PDF generati da gestionali
-    # (TeamSystem, Zucchetti, ...) e da molti template Word/Excel, l'INTERA
-    # pagina è un singolo Form XObject. Senza discendervi dentro, non si
-    # vedono linee/rect/chars. Cf. PDF Spec 1.7 §8.10.
+    # Form XObjects: containers that encapsulate graphics (lines, rects, text)
+    # as a reusable "graphics subroutine". In PDFs generated by management
+    # software (TeamSystem, Zucchetti, ...) and by many Word/Excel templates,
+    # the ENTIRE page is a single Form XObject. Without descending into it, no
+    # lines/rects/chars are visible. Cf. PDF Spec 1.7 §8.10.
     #
-    # Dopo FPDFFormObj_GetObject(form, i) si ottiene un FPDF_PAGEOBJECT child
-    # le cui coordinate sono nel sistema del form. La trasformazione al
-    # sistema-pagina si ottiene da FPDFPageObj_GetMatrix(form_obj, &matrix).
+    # After FPDFFormObj_GetObject(form, i) one obtains a child FPDF_PAGEOBJECT
+    # whose coordinates are in the form's system. The transformation to the
+    # page system is obtained from FPDFPageObj_GetMatrix(form_obj, &matrix).
     # =========================================================================
     attach_function :FPDFFormObj_CountObjects, %i[FPDF_PAGEOBJECT], :int
     attach_function :FPDFFormObj_GetObject,
                     %i[FPDF_PAGEOBJECT ulong], :FPDF_PAGEOBJECT
 
     # =========================================================================
-    # Path segments — fondamentali per detection linee tabella
+    # Path segments — fundamental for table line detection
     # =========================================================================
     attach_function :FPDFPath_CountSegments, %i[FPDF_PAGEOBJECT], :int
     attach_function :FPDFPath_GetPathSegment,
@@ -474,33 +474,33 @@ module Rpdfium
                     %i[FPDF_PAGEOBJECT int pointer ulong], :ulong
 
     # =========================================================================
-    # Text page-objects (font name di un text object, glifi)
+    # Text page-objects (font name of a text object, glyphs)
     # =========================================================================
     attach_function :FPDFTextObj_GetFontSize,
                     %i[FPDF_PAGEOBJECT pointer], :FPDF_BOOL
     attach_function :FPDFTextObj_GetText,
                     %i[FPDF_PAGEOBJECT FPDF_TEXTPAGE pointer ulong], :ulong
     attach_function :FPDFTextObj_GetFont, %i[FPDF_PAGEOBJECT], :FPDF_FONT
-    # FPDFTextObj_GetTextRenderMode è il rimpiazzo dell'ex
-    # FPDFText_GetTextRenderMode (rimossa upstream in chromium/6611).
-    # Prende un text PAGEOBJECT, non (textpage, char_index).
+    # FPDFTextObj_GetTextRenderMode is the replacement for the former
+    # FPDFText_GetTextRenderMode (removed upstream in chromium/6611).
+    # It takes a text PAGEOBJECT, not (textpage, char_index).
     attach_function :FPDFTextObj_GetTextRenderMode, %i[FPDF_PAGEOBJECT], :int
-    # NOTE: FPDFFont_GetFontName è marcata come legacy in PDFium recenti.
-    # Il modello nuovo prevede due API distinte:
-    #   - FPDFFont_GetBaseFontName  → BaseFont entry del PDF dict (può
-    #                                 includere prefissi di subset come
+    # NOTE: FPDFFont_GetFontName is marked as legacy in recent PDFium.
+    # The new model provides two distinct APIs:
+    #   - FPDFFont_GetBaseFontName  → BaseFont entry of the PDF dict (may
+    #                                 include subset prefixes such as
     #                                 "ABCDEF+Helvetica")
-    #   - FPDFFont_GetFamilyName    → nome famiglia "pulito" (es. "Helvetica")
-    # Queste API usano `c_size_t` per lunghezza/return type invece di
-    # `c_ulong`. Su build di PDFium <= chromium/6533 non sono presenti:
-    # in tal caso lo stub `attach_function` (in raw.rb) assicura che la
-    # chiamata fallisca con LoadError chiaro al call site, non al require.
+    #   - FPDFFont_GetFamilyName    → "clean" family name (e.g. "Helvetica")
+    # These APIs use `c_size_t` for length/return type instead of
+    # `c_ulong`. On PDFium builds <= chromium/6533 they are not present:
+    # in that case the `attach_function` stub (in raw.rb) ensures that the
+    # call fails with a clear LoadError at the call site, not at require.
     attach_function :FPDFFont_GetBaseFontName,
                     %i[FPDF_FONT pointer size_t], :size_t
     attach_function :FPDFFont_GetFamilyName,
                     %i[FPDF_FONT pointer size_t], :size_t
-    # Mantenuta per compatibilità con build PDFium più vecchi. Su build
-    # nuovi può non essere presente: stesso meccanismo di stub.
+    # Kept for compatibility with older PDFium builds. On newer builds
+    # it may not be present: same stub mechanism.
     attach_function :FPDFFont_GetFontName,
                     %i[FPDF_FONT pointer ulong], :ulong
     attach_function :FPDFFont_GetFlags,    %i[FPDF_FONT pointer], :FPDF_BOOL
@@ -509,30 +509,30 @@ module Rpdfium
     attach_function :FPDFFont_GetItalicAngle,
                     %i[FPDF_FONT pointer], :FPDF_BOOL
 
-    # Metriche font ascendente/discendente in unità del font program.
-    # Per ottenere il valore in coordinate pagina serve moltiplicare per
-    # font_size del text object e poi per la scala del CTM. Utili per
-    # baseline detection e leading di linee.
+    # Font ascent/descent metrics in font-program units.
+    # To obtain the value in page coordinates, multiply by the text object's
+    # font_size and then by the CTM scale. Useful for
+    # baseline detection and line leading.
     attach_function :FPDFFont_GetAscent,  %i[FPDF_FONT int pointer], :FPDF_BOOL
     attach_function :FPDFFont_GetDescent, %i[FPDF_FONT int pointer], :FPDF_BOOL
 
-    # Larghezza nominale di un glifo nel font program ("advance width").
-    # È la larghezza che il PDF dichiara per quel glifo prima del kerning
-    # applicato dagli operatori `TJ`. In combinazione con FPDFText_GetMatrix
-    # (per la scala del CTM), permette di calcolare l'advance reale in
-    # coordinate pagina. Equivale concettualmente all'advance che pdfminer.six
-    # legge dal font program direttamente.
+    # Nominal width of a glyph in the font program ("advance width").
+    # It is the width the PDF declares for that glyph before the kerning
+    # applied by the `TJ` operators. In combination with FPDFText_GetMatrix
+    # (for the CTM scale), it allows the real advance in page coordinates to
+    # be computed. Conceptually equivalent to the advance that pdfminer.six
+    # reads directly from the font program.
     #
-    # ATTENZIONE: il valore ritornato è in unità "scalate per font_size",
-    # con font_size passato come parametro. Per la maggior parte dei PDF
-    # generati da gestionali, il font_size è 1.0 e il CTM scala
-    # (tipicamente 5×–10× per il rendering finale).
+    # WARNING: the returned value is in "font_size-scaled" units,
+    # with font_size passed as a parameter. For most PDFs
+    # generated by management software, the font_size is 1.0 and the CTM
+    # scales (typically 5×–10× for the final rendering).
     attach_function :FPDFFont_GetGlyphWidth,
                     %i[FPDF_FONT uint float pointer], :FPDF_BOOL
 
-    # NOTA: FPDFText_GetMatrix è già attaccata sopra (sezione text page).
-    # In combinazione con FPDFFont_GetGlyphWidth, permette di calcolare
-    # l'advance del glifo in coordinate pagina come
+    # NOTE: FPDFText_GetMatrix is already attached above (text page section).
+    # In combination with FPDFFont_GetGlyphWidth, it allows the glyph advance
+    # in page coordinates to be computed as
     # `glyph_width × |FPDFText_GetMatrix.a|`.
 
     # =========================================================================
@@ -563,16 +563,16 @@ module Rpdfium
     # =========================================================================
     # Forms
     # =========================================================================
-    # FPDF_FORMFILLINFO è una struct ricca (~70 campi negli ultimi build).
-    # Per la sola ESTRAZIONE basta passare una versione minima con version=2
-    # e tutti i callback nulli — PDFium tollera NULL su quelli non chiamati
-    # in modalità read-only (no JavaScript, no XFA).
+    # FPDF_FORMFILLINFO is a rich struct (~70 fields in the latest builds).
+    # For EXTRACTION alone it is enough to pass a minimal version with version=2
+    # and all callbacks null — PDFium tolerates NULL on those not called
+    # in read-only mode (no JavaScript, no XFA).
     class FPDF_FORMFILLINFO < FFI::Struct
-      # Tieni allineato all'header pubblico fpdf_formfill.h. Il campo critico è
-      # `version` — se sbagli, init fallisce silenziosamente. Per uso read-only
-      # basta version=2 + tutti gli altri zero/NULL. Allochiamo un buffer molto
-      # generoso (256 puntatori) per essere robusti a future estensioni
-      # dell'header.
+      # Keep aligned with the public header fpdf_formfill.h. The critical field
+      # is `version` — if it is wrong, init fails silently. For read-only use
+      # version=2 + all others zero/NULL is enough. We allocate a very
+      # generous buffer (256 pointers) to be robust against future extensions
+      # of the header.
       layout :version, :int,
              :_callbacks, [:pointer, 256]
     end
@@ -625,23 +625,23 @@ module Rpdfium
                     %i[FPDF_ATTACHMENT pointer ulong pointer], :FPDF_BOOL
 
     # =========================================================================
-    # Structure tree (per PDF tagged → estrazione semantica robusta)
+    # Structure tree (for tagged PDF → robust semantic extraction)
     # =========================================================================
     #
-    # Per PDF "tagged" (PDF/UA, esport da Word/LibreOffice/InDesign), il
-    # `StructTreeRoot` espone una struttura logica del documento (Document
-    # → P, H1, Table, TR, TH, TD, Figure...) indipendente dal layout grafico.
-    # Ogni element può essere collegato al testo della pagina tramite
-    # `MarkedContentID`: i page objects con lo stesso MCID appartengono
-    # semanticamente a quell'element.
+    # For "tagged" PDFs (PDF/UA, exports from Word/LibreOffice/InDesign), the
+    # `StructTreeRoot` exposes a logical structure of the document (Document
+    # → P, H1, Table, TR, TH, TD, Figure...) independent of the graphical
+    # layout. Each element can be linked to the page text via
+    # `MarkedContentID`: page objects with the same MCID belong
+    # semantically to that element.
     #
-    # Su PDF NON tagged (la maggior parte dei gestionali italiani):
-    # FPDF_StructTree_GetForPage ritorna NULL.
+    # On NON-tagged PDFs (most Italian management-software output):
+    # FPDF_StructTree_GetForPage returns NULL.
     #
-    # Su PDF "tagged ma vuoto" (es. CR Banca d'Italia, dove il
-    # StructTreeRoot esiste con 700+ entries ma tutti gli elementi sono
-    # placeholder senza type/MCID): il tree è present ma walk produce
-    # output vuoto. Vedi `Rpdfium::Structure::Tree#empty?`.
+    # On "tagged but empty" PDFs (e.g. a Banca d'Italia CR, where the
+    # StructTreeRoot exists with 700+ entries but all elements are
+    # placeholders without type/MCID): the tree is present but the walk
+    # produces empty output. See `Rpdfium::Structure::Tree#empty?`.
     typedef :pointer, :FPDF_STRUCTELEMENT_ATTR
     typedef :pointer, :FPDF_STRUCTELEMENT_ATTR_VALUE
 
@@ -653,7 +653,7 @@ module Rpdfium
     attach_function :FPDF_StructTree_GetChildAtIndex,
                     %i[FPDF_STRUCTTREE int], :FPDF_STRUCTELEMENT
 
-    # Navigazione del tree
+    # Tree navigation
     attach_function :FPDF_StructElement_CountChildren,
                     %i[FPDF_STRUCTELEMENT], :int
     attach_function :FPDF_StructElement_GetChildAtIndex,
@@ -661,7 +661,7 @@ module Rpdfium
     attach_function :FPDF_StructElement_GetParent,
                     %i[FPDF_STRUCTELEMENT], :FPDF_STRUCTELEMENT
 
-    # Identificazione element
+    # Element identification
     attach_function :FPDF_StructElement_GetType,
                     %i[FPDF_STRUCTELEMENT pointer ulong], :ulong
     attach_function :FPDF_StructElement_GetObjType,
@@ -673,7 +673,7 @@ module Rpdfium
     attach_function :FPDF_StructElement_GetLang,
                     %i[FPDF_STRUCTELEMENT pointer ulong], :ulong
 
-    # Testo "logico" overrides (accessibility, ligature resolution)
+    # "Logical" text overrides (accessibility, ligature resolution)
     attach_function :FPDF_StructElement_GetActualText,
                     %i[FPDF_STRUCTELEMENT pointer ulong], :ulong
     attach_function :FPDF_StructElement_GetAltText,
@@ -681,10 +681,10 @@ module Rpdfium
     attach_function :FPDF_StructElement_GetExpansion,
                     %i[FPDF_STRUCTELEMENT pointer ulong], :ulong
 
-    # Marked content IDs (collegano elementi → page objects con stesso MCID)
-    # GetMarkedContentID ritorna il primo MCID (per back-compat).
-    # GetMarkedContentIdCount + IdAtIndex per elementi con multiple MCID.
-    # GetChildMarkedContentID: MCID del figlio se è un MCR diretto.
+    # Marked content IDs (link elements → page objects with the same MCID)
+    # GetMarkedContentID returns the first MCID (for back-compat).
+    # GetMarkedContentIdCount + IdAtIndex for elements with multiple MCIDs.
+    # GetChildMarkedContentID: MCID of the child if it is a direct MCR.
     attach_function :FPDF_StructElement_GetMarkedContentID,
                     %i[FPDF_STRUCTELEMENT], :int
     attach_function :FPDF_StructElement_GetMarkedContentIdCount,
@@ -694,9 +694,9 @@ module Rpdfium
     attach_function :FPDF_StructElement_GetChildMarkedContentID,
                     %i[FPDF_STRUCTELEMENT int], :int
 
-    # Attributi PDF strutturali (RowSpan, ColSpan, Scope, Headers, ecc.)
-    # Sono in una sotto-API: ogni element ha 0+ attribute objects, ognuno
-    # con 0+ key/value pairs.
+    # Structural PDF attributes (RowSpan, ColSpan, Scope, Headers, etc.)
+    # They live in a sub-API: each element has 0+ attribute objects, each
+    # with 0+ key/value pairs.
     attach_function :FPDF_StructElement_GetAttributeCount,
                     %i[FPDF_STRUCTELEMENT], :int
     attach_function :FPDF_StructElement_GetAttributeAtIndex,
@@ -704,7 +704,7 @@ module Rpdfium
     attach_function :FPDF_StructElement_GetStringAttribute,
                     %i[FPDF_STRUCTELEMENT string pointer ulong], :ulong
 
-    # Attribute getters: enumerazione key/value
+    # Attribute getters: key/value enumeration
     attach_function :FPDF_StructElement_Attr_GetCount,
                     %i[FPDF_STRUCTELEMENT_ATTR], :int
     attach_function :FPDF_StructElement_Attr_GetName,
@@ -725,7 +725,7 @@ module Rpdfium
     attach_function :FPDF_StructElement_Attr_GetBlobValue,
                     %i[FPDF_STRUCTELEMENT_ATTR_VALUE pointer ulong pointer],
                     :FPDF_BOOL
-    # Attribute con value che è un altro array (es. Headers che è array di IDs)
+    # Attribute whose value is another array (e.g. Headers, an array of IDs)
     attach_function :FPDF_StructElement_Attr_CountChildren,
                     %i[FPDF_STRUCTELEMENT_ATTR_VALUE], :int
     attach_function :FPDF_StructElement_Attr_GetChildAtIndex,
@@ -735,17 +735,17 @@ module Rpdfium
     # =========================================================================
     # Page box geometry — media/crop/bleed/trim/art box
     # =========================================================================
-    # Ogni pagina PDF ha fino a 5 box rettangolari, in coordinate bottom-up:
-    #   - media: l'area fisica completa della pagina (sempre presente)
-    #   - crop: la sotto-area visibile (default = media se non specificata)
-    #   - bleed: area utile per stampa con marginatura (rare)
-    #   - trim: area finale di taglio (rare, per pre-stampa)
-    #   - art: area di contenuto significativo (rare)
+    # Each PDF page has up to 5 rectangular boxes, in bottom-up coordinates:
+    #   - media: the complete physical area of the page (always present)
+    #   - crop: the visible sub-area (default = media if not specified)
+    #   - bleed: usable area for printing with bleed margins (rare)
+    #   - trim: final cut area (rare, for pre-press)
+    #   - art: area of significant content (rare)
     #
-    # In pdfplumber sono esposte come `page.mediabox`, `page.cropbox`, ecc.
-    # Senza accesso a cropbox, una libreria di estrazione PDF non può sapere
-    # qual è l'area "visibile" della pagina vs quella "fisica".
-    # Tutte ritornano FPDF_BOOL: 0 se il box non è definito.
+    # In pdfplumber these are exposed as `page.mediabox`, `page.cropbox`, etc.
+    # Without access to the cropbox, a PDF extraction library cannot know
+    # which is the "visible" area of the page vs the "physical" one.
+    # They all return FPDF_BOOL: 0 if the box is not defined.
     attach_function :FPDFPage_GetMediaBox,
                     %i[FPDF_PAGE pointer pointer pointer pointer], :FPDF_BOOL
     attach_function :FPDFPage_GetCropBox,
@@ -758,25 +758,25 @@ module Rpdfium
                     %i[FPDF_PAGE pointer pointer pointer pointer], :FPDF_BOOL
 
     # =========================================================================
-    # Page object: stato, bounds rotati, dash pattern, marked content
+    # Page object: state, rotated bounds, dash pattern, marked content
     # =========================================================================
-    # `FPDFPageObj_GetIsActive`: alcuni page object possono essere "inattivi"
-    # (es. nascosti da Optional Content / livelli disabilitati). Senza
-    # questo check, l'estrazione includerebbe contenuto non visibile.
-    # Restituisce 0/1 in *out_active.
+    # `FPDFPageObj_GetIsActive`: some page objects may be "inactive"
+    # (e.g. hidden by Optional Content / disabled layers). Without
+    # this check, extraction would include non-visible content.
+    # Returns 0/1 in *out_active.
     attach_function :FPDFPageObj_GetIsActive,
                     %i[FPDF_PAGEOBJECT pointer], :FPDF_BOOL
 
-    # `FPDFPageObj_GetRotatedBounds`: bbox in 4 punti (FS_QUADPOINTSF) per
-    # oggetti ruotati. La GetBounds standard ritorna l'AABB (Axis-Aligned
-    # Bounding Box), inutile per oggetti a 45°/90°. Per testo verticale o
-    # ruotato, questo è il bbox "vero".
+    # `FPDFPageObj_GetRotatedBounds`: bbox as 4 points (FS_QUADPOINTSF) for
+    # rotated objects. The standard GetBounds returns the AABB (Axis-Aligned
+    # Bounding Box), useless for objects at 45°/90°. For vertical or
+    # rotated text, this is the "true" bbox.
     attach_function :FPDFPageObj_GetRotatedBounds,
                     %i[FPDF_PAGEOBJECT pointer], :FPDF_BOOL
 
-    # Dash pattern: utile in `line_segments` per filtrare linee guida
-    # tratteggiate (spesso usate come "non-printing" hints nei template).
-    # Le linee dashed possono confondere la detection cellule tabelle.
+    # Dash pattern: useful in `line_segments` to filter out dashed
+    # guide lines (often used as "non-printing" hints in templates).
+    # Dashed lines can confuse table cell detection.
     attach_function :FPDFPageObj_GetDashCount,
                     %i[FPDF_PAGEOBJECT], :int
     attach_function :FPDFPageObj_GetDashArray,
@@ -784,12 +784,12 @@ module Rpdfium
     attach_function :FPDFPageObj_GetDashPhase,
                     %i[FPDF_PAGEOBJECT pointer], :FPDF_BOOL
 
-    # Marked content (Tagged PDF) — operatori BMC/BDC del content stream.
-    # In PDF strutturati (PDF/UA, Word→PDF, InDesign export), gli operatori
-    # `/Span BMC ... EMC` o `/Span <</MCID 12>> BDC ... EMC` raggruppano
-    # semanticamente i char. Per PDF generati da gestionali italiani questi
-    # tag NON sono presenti; per PDF "tagged" sono il modo più affidabile
-    # di raggruppare token.
+    # Marked content (Tagged PDF) — BMC/BDC operators of the content stream.
+    # In structured PDFs (PDF/UA, Word→PDF, InDesign export), the operators
+    # `/Span BMC ... EMC` or `/Span <</MCID 12>> BDC ... EMC` group
+    # chars semantically. For PDFs generated by Italian management software
+    # these tags are NOT present; for "tagged" PDFs they are the most reliable
+    # way to group tokens.
     attach_function :FPDFPageObj_CountMarks,
                     %i[FPDF_PAGEOBJECT], :int
     attach_function :FPDFPageObj_GetMark,
@@ -814,23 +814,23 @@ module Rpdfium
     # =========================================================================
     # Catalog / Document metadata
     # =========================================================================
-    # FPDFCatalog_GetLanguage: lingua dichiarata dal documento (es. "it-IT").
-    # Utile per pipeline di estrazione che vogliono switchare regole
-    # language-specific (es. tokenizer di parole, lookup hyphen).
+    # FPDFCatalog_GetLanguage: language declared by the document (e.g. "it-IT").
+    # Useful for extraction pipelines that want to switch language-specific
+    # rules (e.g. word tokenizer, hyphen lookup).
     attach_function :FPDFCatalog_GetLanguage,
                     %i[FPDF_DOCUMENT pointer ulong], :ulong
 
-    # FPDFDoc_GetPageMode: stato di apertura PDF (es. PageMode.UseOutlines,
-    # PageMode.FullScreen). Numeric. Utile per editor PDF/viewer building.
+    # FPDFDoc_GetPageMode: PDF open state (e.g. PageMode.UseOutlines,
+    # PageMode.FullScreen). Numeric. Useful for PDF editor/viewer building.
     attach_function :FPDFDoc_GetPageMode, %i[FPDF_DOCUMENT], :int
 
     # =========================================================================
-    # Links (annotation Link e LinkAtPoint per ricerca per coordinata)
+    # Links (Link annotation and LinkAtPoint for coordinate-based lookup)
     # =========================================================================
-    # `FPDFLink_GetLinkAtPoint`: dato (x, y) in coordinate pagina, ritorna
-    # il link annotation che lo contiene. Cuore della funzione "click handling"
-    # in viewer / OCR-style "extract links". Pdfplumber espone simile via
-    # `page.hyperlinks`.
+    # `FPDFLink_GetLinkAtPoint`: given (x, y) in page coordinates, returns
+    # the link annotation that contains it. The core of "click handling"
+    # in viewers / OCR-style "extract links". Pdfplumber exposes something
+    # similar via `page.hyperlinks`.
     attach_function :FPDFLink_GetLinkAtPoint,
                     %i[FPDF_PAGE double double], :FPDF_LINK
     attach_function :FPDFLink_GetLinkZOrderAtPoint,
@@ -839,37 +839,37 @@ module Rpdfium
                     %i[FPDF_PAGE FPDF_LINK], :FPDF_ANNOTATION
     attach_function :FPDFLink_GetAnnotRect,
                     %i[FPDF_LINK pointer], :FPDF_BOOL
-    # FPDFLink_GetTextRange: range di char_index nella text page corrispondenti
-    # al link. Permette di mappare hyperlink → testo della pagina.
+    # FPDFLink_GetTextRange: range of char_index in the text page corresponding
+    # to the link. Allows mapping hyperlink → page text.
     attach_function :FPDFLink_GetTextRange,
                     %i[FPDF_LINK pointer pointer], :FPDF_BOOL
-    # Rect e QuadPoints: geometria del link (rectangle o quadrilatero per
-    # link che attraversano più righe).
+    # Rect and QuadPoints: link geometry (rectangle or quadrilateral for
+    # links that span multiple lines).
     attach_function :FPDFLink_GetRect,
                     %i[FPDF_LINK int pointer], :FPDF_BOOL
     attach_function :FPDFLink_GetQuadPoints,
                     %i[FPDF_LINK int pointer], :FPDF_BOOL
 
     # =========================================================================
-    # Action / Destination (estensioni outline + link)
+    # Action / Destination (outline + link extensions)
     # =========================================================================
-    # FPDFAction_GetDest: per action di tipo "GoTo", ritorna il FPDF_DEST.
-    # FPDFAction_GetFilePath: per action "Launch" o "RemoteGoTo", path del file
-    # esterno target.
+    # FPDFAction_GetDest: for "GoTo"-type actions, returns the FPDF_DEST.
+    # FPDFAction_GetFilePath: for "Launch" or "RemoteGoTo" actions, the path of
+    # the target external file.
     attach_function :FPDFAction_GetDest,
                     %i[FPDF_DOCUMENT FPDF_ACTION], :FPDF_DEST
     attach_function :FPDFAction_GetFilePath,
                     %i[FPDF_ACTION pointer ulong], :ulong
-    # FPDFBookmark_GetAction: action associata a un bookmark (alternativa a
-    # GetDest se il bookmark è un'action invece di una destinazione).
+    # FPDFBookmark_GetAction: action associated with a bookmark (alternative to
+    # GetDest if the bookmark is an action instead of a destination).
     attach_function :FPDFBookmark_GetAction,
                     %i[FPDF_BOOKMARK], :FPDF_ACTION
-    # FPDFBookmark_GetCount: numero di sub-bookmark (positivo = espansi,
-    # negativo = collassati, 0 = leaf).
+    # FPDFBookmark_GetCount: number of sub-bookmarks (positive = expanded,
+    # negative = collapsed, 0 = leaf).
     attach_function :FPDFBookmark_GetCount,
                     %i[FPDF_BOOKMARK], :int
-    # FPDFDest_GetView: tipo di view (Fit, FitH, XYZ ecc.) + parametri.
-    # FPDFDest_GetLocationInPage: x/y/zoom estratti dal dest.
+    # FPDFDest_GetView: view type (Fit, FitH, XYZ, etc.) + parameters.
+    # FPDFDest_GetLocationInPage: x/y/zoom extracted from the dest.
     attach_function :FPDFDest_GetView,
                     %i[FPDF_DEST pointer pointer], :ulong
     attach_function :FPDFDest_GetLocationInPage,
@@ -879,17 +879,17 @@ module Rpdfium
     # =========================================================================
     # Font extras: GetFontData, GetAscent, GetDescent
     # =========================================================================
-    # Già attaccate sopra: FPDFFont_GetGlyphWidth.
-    # Aggiungiamo: FontData (raw font program bytes — utile per inspection,
-    # debug embedding, font substitution) e GetGlyphPath (path vettoriale di
-    # un glifo, alternativa a GlyphWidth per font esotici).
-    # GetFontData ha la convention bool: ritorna `out_buflen` se buf è NULL.
+    # Already attached above: FPDFFont_GetGlyphWidth.
+    # We add: FontData (raw font program bytes — useful for inspection,
+    # embedding debugging, font substitution) and GetGlyphPath (vector path of
+    # a glyph, an alternative to GlyphWidth for exotic fonts).
+    # GetFontData follows the bool convention: it returns `out_buflen` if buf is NULL.
     attach_function :FPDFFont_GetFontData,
                     %i[FPDF_FONT pointer size_t pointer], :FPDF_BOOL
     attach_function :FPDFFont_GetGlyphPath,
                     %i[FPDF_FONT uint float], :FPDF_GLYPHPATH
-    # FPDF_GLYPHPATH: handle a un path. Lo aggiungo come typedef.
-    # Le sue API GlyphPath_* sono niche, ma le esponiamo per simmetria.
+    # FPDF_GLYPHPATH: handle to a path. Added as a typedef.
+    # Its GlyphPath_* APIs are niche, but we expose them for symmetry.
     attach_function :FPDFGlyphPath_CountGlyphSegments,
                     %i[FPDF_GLYPHPATH], :int
     attach_function :FPDFGlyphPath_GetGlyphPathSegment,
@@ -898,14 +898,14 @@ module Rpdfium
     # =========================================================================
     # Text page: char index at position
     # =========================================================================
-    # FPDFText_GetCharIndexAtPos: dato un punto (x, y) in coord pagina,
-    # ritorna l'indice del char più vicino (entro tolerance). Utile per
-    # "hit test" in viewer e per mapping coord → text index nella ricerca.
+    # FPDFText_GetCharIndexAtPos: given a point (x, y) in page coordinates,
+    # returns the index of the nearest char (within tolerance). Useful for
+    # "hit test" in viewers and for mapping coord → text index during search.
     attach_function :FPDFText_GetCharIndexAtPos,
                     %i[FPDF_TEXTPAGE double double double double], :int
     # FPDFText_GetTextIndexFromCharIndex / GetCharIndexFromTextIndex:
-    # mappano l'indice "char" (per glifo) all'indice "text" (per codepoint
-    # logico). I due indici differiscono per ligature/sostituzioni.
+    # map the "char" index (per glyph) to the "text" index (per logical
+    # codepoint). The two indices differ due to ligatures/substitutions.
     attach_function :FPDFText_GetTextIndexFromCharIndex,
                     %i[FPDF_TEXTPAGE int], :int
     attach_function :FPDFText_GetCharIndexFromTextIndex,
@@ -914,27 +914,27 @@ module Rpdfium
     # =========================================================================
     # Annotation extras: GetFlags, GetColor, GetBorder, AP, attachment points
     # =========================================================================
-    # FPDFAnnot_GetFlags: bitmask di Flags (Hidden, Print, NoZoom ecc.).
-    # Senza questo, non possiamo distinguere un annotation visibile da uno
-    # con flag Hidden.
+    # FPDFAnnot_GetFlags: bitmask of Flags (Hidden, Print, NoZoom, etc.).
+    # Without this, we cannot distinguish a visible annotation from one
+    # with the Hidden flag.
     attach_function :FPDFAnnot_GetFlags, %i[FPDF_ANNOTATION], :int
-    # Colore: stroke (BORDER_COLOR) e fill (INTERIOR_COLOR).
+    # Color: stroke (BORDER_COLOR) and fill (INTERIOR_COLOR).
     attach_function :FPDFAnnot_GetColor,
                     %i[FPDF_ANNOTATION int pointer pointer pointer pointer],
                     :FPDF_BOOL
-    # Border: spessore, raggio orizzontale/verticale, dash array count.
+    # Border: thickness, horizontal/vertical radius, dash array count.
     attach_function :FPDFAnnot_GetBorder,
                     %i[FPDF_ANNOTATION pointer pointer pointer], :FPDF_BOOL
-    # AP (Appearance Stream): forma renderizzata dell'annotation in vari
-    # modi (Normal/Rollover/Down).
+    # AP (Appearance Stream): rendered form of the annotation in various
+    # modes (Normal/Rollover/Down).
     attach_function :FPDFAnnot_GetAP,
                     %i[FPDF_ANNOTATION int pointer ulong], :ulong
-    # FileAttachment: per Annotation di sottotipo FileAttachment, ottiene
-    # l'FPDF_ATTACHMENT.
+    # FileAttachment: for annotations of subtype FileAttachment, obtains
+    # the FPDF_ATTACHMENT.
     attach_function :FPDFAnnot_GetFileAttachment,
                     %i[FPDF_ANNOTATION], :FPDF_ATTACHMENT
-    # AttachmentPoints: per highlight/markup che attraversano più righe,
-    # i 4 punti di ogni quadrilatero.
+    # AttachmentPoints: for highlight/markup spanning multiple lines,
+    # the 4 points of each quadrilateral.
     attach_function :FPDFAnnot_CountAttachmentPoints,
                     %i[FPDF_ANNOTATION], :size_t
     attach_function :FPDFAnnot_GetAttachmentPoints,
@@ -943,11 +943,11 @@ module Rpdfium
     # =========================================================================
     # Attachment extras
     # =========================================================================
-    # FPDFAttachment_GetSubtype: MIME-like subtype del file allegato.
+    # FPDFAttachment_GetSubtype: MIME-like subtype of the attached file.
     attach_function :FPDFAttachment_GetSubtype,
                     %i[FPDF_ATTACHMENT pointer ulong], :ulong
-    # FPDFAttachment_GetStringValue/HasKey: per leggere i metadati custom
-    # del file attachment (Description, CreationDate, ecc.).
+    # FPDFAttachment_GetStringValue/HasKey: to read the custom metadata
+    # of the file attachment (Description, CreationDate, etc.).
     attach_function :FPDFAttachment_HasKey,
                     %i[FPDF_ATTACHMENT string], :FPDF_BOOL
     attach_function :FPDFAttachment_GetValueType,
@@ -956,15 +956,15 @@ module Rpdfium
                     %i[FPDF_ATTACHMENT string pointer ulong], :ulong
 
     # =========================================================================
-    # Helper: leggere stringhe UTF-16LE che PDFium ritorna in bytes
+    # Helper: reading UTF-16LE strings that PDFium returns as bytes
     # =========================================================================
-    # Convenzione PDFium: la maggior parte delle Get*Text/Get*Name ritornano
-    # `unsigned long` (numero BYTES, terminatore incluso). Si chiama prima con
-    # buffer NULL/0 per ottenere la dimensione, poi con buffer allocato.
+    # PDFium convention: most Get*Text/Get*Name calls return
+    # `unsigned long` (number of BYTES, terminator included). It is called
+    # first with a NULL/0 buffer to obtain the size, then with an allocated buffer.
     def self.read_utf16_string(method_name, *args)
       args_probe = args + [FFI::Pointer::NULL, 0]
       n_bytes = send(method_name, *args_probe)
-      return "" if n_bytes <= 2 # solo terminatore null o errore
+      return "" if n_bytes <= 2 # only the null terminator or an error
 
       buf = FFI::MemoryPointer.new(:uchar, n_bytes)
       args_real = args + [buf, n_bytes]
@@ -972,7 +972,7 @@ module Rpdfium
       utf16_bytes_to_utf8(buf.read_bytes(n_bytes))
     end
 
-    # PDFium ritorna UTF-16LE little-endian con terminatore null.
+    # PDFium returns little-endian UTF-16LE with a null terminator.
     def self.utf16_bytes_to_utf8(bytes)
       bytes.force_encoding("UTF-16LE")
            .encode("UTF-8", invalid: :replace, undef: :replace)

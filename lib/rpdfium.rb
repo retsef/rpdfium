@@ -3,9 +3,9 @@
 require_relative "rpdfium/version"
 require_relative "rpdfium/errors"
 
-# Carica la gemma companion rpdfium-binary se presente: deve avvenire PRIMA
-# di raw.rb, che chiama ffi_lib al momento del require e interroga
-# Rpdfium::Binary.library_path per trovare il path assoluto al .so/.dylib.
+# Loads the companion gem rpdfium-binary if present: this must happen BEFORE
+# raw.rb, which calls ffi_lib at require time and queries
+# Rpdfium::Binary.library_path to find the absolute path to the .so/.dylib.
 begin
   require "rpdfium/binary"
 rescue LoadError
@@ -54,19 +54,19 @@ module Rpdfium
     Document.open(input, password: password, &block)
   end
 
-  # Estrai tutto il testo di tutte le pagine, una stringa per pagina.
+  # Extract all the text of all pages, one string per page.
   def self.extract_text(input, password: nil)
     open(input, password: password) { |doc| doc.map(&:text) }
   end
 
-  # Estrai tutte le tabelle di tutte le pagine.
-  # Ritorna Array<{ page: Integer, rows: Array<Array<String>> }>.
+  # Extract all the tables of all pages.
+  # Returns Array<{ page: Integer, rows: Array<Array<String>> }>.
   #
-  # `keep_blank_rows: false` (default) elimina le righe completamente vuote
-  # che la strategia `:text` di words_to_edges_h genera per costruzione (ogni
-  # riga visiva produce due edges, top + bottom, e tra coppie di edges
-  # adiacenti si formano "righe spurie" di altezza pari al gap interlinea).
-  # Con `keep_blank_rows: true` ottieni l'output grezzo di Table#extract.
+  # `keep_blank_rows: false` (default) removes the completely empty rows
+  # that the `:text` strategy of words_to_edges_h generates by construction (each
+  # visual row produces two edges, top + bottom, and between pairs of adjacent
+  # edges "spurious rows" form, with a height equal to the line gap).
+  # With `keep_blank_rows: true` you get the raw output of Table#extract.
   def self.extract_tables(input, password: nil, keep_blank_rows: false, **opts)
     open(input, password: password) do |doc|
       doc.flat_map do |page|
@@ -78,7 +78,7 @@ module Rpdfium
     end
   end
 
-  # Renderizza ogni pagina in un PNG dentro output_dir.
+  # Render each page to a PNG inside output_dir.
   def self.render_to_pngs(input, output_dir:, scale: 2.0, password: nil)
     Dir.mkdir(output_dir) unless Dir.exist?(output_dir)
     open(input, password: password) do |doc|

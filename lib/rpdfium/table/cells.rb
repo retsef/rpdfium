@@ -2,32 +2,34 @@
 
 module Rpdfium
   module Table
-    # Costruisce celle da intersezioni e tabelle da celle.
-    # Algoritmi 1:1 con pdfplumber.intersections_to_cells e
+    # Builds cells from intersections and tables from cells.
+    # Algorithms 1:1 with pdfplumber.intersections_to_cells and
     # pdfplumber.cells_to_tables.
     module Cells
       module_function
 
-      # Ricerca della "smallest cell" per ogni intersezione: dato un punto
-      # `pt = (x, y)`, cerca il rettangolo minimo i cui 4 corner sono
-      # intersezioni e i cui 4 lati hanno edge che le connettono.
+      # "Smallest cell" search for each intersection: given a point
+      # `pt = (x, y)`, find the minimal rectangle whose 4 corners are
+      # intersections and whose 4 sides have edges connecting them.
       #
-      # Il vincolo "edge connect" è cruciale: due intersezioni con stessa
-      # x non bastano — devono CONDIVIDERE almeno un edge verticale (cioè
-      # appartenere a uno stesso segmento continuo). Idem orizzontale.
-      # Questo evita falsi positivi tipo "due colonne lontane allineate
-      # accidentalmente".
+      # The "edge connect" constraint is crucial: two intersections with
+      # the same x are not enough — they must SHARE at least one vertical
+      # edge (i.e. belong to the same continuous segment). Likewise
+      # horizontally. This avoids false positives such as "two distant
+      # columns accidentally aligned".
       #
-      # `intersections` è il Hash prodotto da Edges.edges_to_intersections,
-      # con chiavi `[x, y]` e valori `{ v: [edges...], h: [edges...] }`.
+      # `intersections` is the Hash produced by
+      # Edges.edges_to_intersections, with keys `[x, y]` and values
+      # `{ v: [edges...], h: [edges...] }`.
       def intersections_to_cells(intersections)
         return [] if intersections.empty?
 
-        # Indici di adiacenza: per ogni edge (oggetto Hash, identità di
-        # ruby), quali intersection points contiene? Pdfplumber lo fa
-        # confrontando bbox degli edge — noi abbiamo accesso diretto agli
-        # oggetti edge dentro `intersections[pt]`, basta usare l'identity.
-        # Per "stesso edge" usiamo `equal?` (identità d'oggetto).
+        # Adjacency indices: for each edge (a Hash object, ruby
+        # identity), which intersection points does it contain?
+        # Pdfplumber does this by comparing the bbox of the edges — we
+        # have direct access to the edge objects inside
+        # `intersections[pt]`, so it suffices to use identity. For "same
+        # edge" we use `equal?` (object identity).
         edge_ids = intersections.transform_values do |val|
           { v: val[:v].map(&:object_id).to_set,
             h: val[:h].map(&:object_id).to_set }
@@ -46,9 +48,9 @@ module Rpdfium
         points = intersections.keys.sort
         npoints = points.size
 
-        # Indici spaziali: precomputa punti per colonna (stessa x) e per riga
-        # (stessa y), già ordinati perché `points` è sorted.
-        # Permette lookup O(log n) via bsearch invece di O(n) via select.
+        # Spatial indices: precompute points by column (same x) and by
+        # row (same y), already ordered because `points` is sorted.
+        # Allows O(log n) lookup via bsearch instead of O(n) via select.
         by_x = Hash.new { |h, k| h[k] = [] }
         by_y = Hash.new { |h, k| h[k] = [] }
         points.each { |p| by_x[p[0]] << p; by_y[p[1]] << p }
@@ -57,18 +59,18 @@ module Rpdfium
         points.each_with_index do |pt, i|
           next if i == npoints - 1
 
-          # Punti direttamente sotto `pt` (stessa x, y maggiore)
+          # Points directly below `pt` (same x, greater y)
           col = by_x[pt[0]]
           below_start = col.bsearch_index { |q| q[1] > pt[1] } || col.size
           below = col[below_start..]
 
-          # Punti direttamente a destra di `pt` (stessa y, x maggiore)
+          # Points directly to the right of `pt` (same y, greater x)
           row_pts = by_y[pt[1]]
           right_start = row_pts.bsearch_index { |q| q[0] > pt[0] } || row_pts.size
           right = row_pts[right_start..]
 
-          # Cerca il PRIMO (== più piccolo per via dell'ordinamento) bottom-right
-          # i cui 4 corner sono presenti e gli edge connettono.
+          # Find the FIRST (== smallest, due to ordering) bottom-right
+          # whose 4 corners are present and whose edges connect.
           found = nil
           below.each do |b|
             next unless edge_connects.call(pt, b)
@@ -91,13 +93,14 @@ module Rpdfium
         cells
       end
 
-      # Raggruppa celle in tabelle in base ai corner condivisi.
+      # Groups cells into tables based on shared corners.
       #
-      # Algoritmo: Union-Find (disjoint set) sui corner — O(n α(n)) invece
-      # del greedy fixed-point O(n²) di pdfplumber. Il risultato è identico:
-      # due celle finiscono nello stesso gruppo se condividono almeno un corner.
+      # Algorithm: Union-Find (disjoint set) on the corners — O(n α(n))
+      # instead of pdfplumber's greedy fixed-point O(n²). The result is
+      # identical: two cells end up in the same group if they share at
+      # least one corner.
       #
-      # Filtro finale: scarta tabelle con UNA SOLA cella (rumore).
+      # Final filter: discard tables with a SINGLE cell (noise).
       def cells_to_tables(cells)
         return [] if cells.empty?
 
@@ -110,8 +113,8 @@ module Rpdfium
         end
         union = ->(a, b) { parent[find.call(a)] = find.call(b) }
 
-        # Per ogni corner, raccoglie gli indici delle celle che lo condividono
-        # e le unisce nel medesimo componente.
+        # For each corner, collect the indices of the cells that share it
+        # and union them into the same component.
         corner_to_cells = Hash.new { |h, k| h[k] = [] }
         cells.each_with_index do |cell, idx|
           x0, top, x1, bottom = cell
@@ -123,11 +126,11 @@ module Rpdfium
           idxs.each_cons(2) { |a, b| union.call(a, b) }
         end
 
-        # Raggruppa per root del Union-Find
+        # Group by the Union-Find root
         groups = Hash.new { |h, k| h[k] = [] }
         cells.each_with_index { |cell, i| groups[find.call(i)] << cell }
 
-        # Sort top-to-bottom, left-to-right; filtra single-cell.
+        # Sort top-to-bottom, left-to-right; filter out single-cell.
         groups.values
               .sort_by { |t| t.map { |c| [c[1], c[0]] }.min }
               .reject  { |t| t.size <= 1 }

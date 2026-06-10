@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 module Rpdfium
-  # Wrapper per FPDF_ANNOTATION. Le annotazioni includono link, highlight,
-  # commenti, widget di form. PDFium richiede di chiudere ogni handle con
-  # FPDFPage_CloseAnnot, gestito qui via finalizer.
+  # Wrapper for FPDF_ANNOTATION. Annotations include links, highlights,
+  # comments, form widgets. PDFium requires closing each handle with
+  # FPDFPage_CloseAnnot, handled here via a finalizer.
   class Annotation
     SUBTYPES = {
       Raw::FPDF_ANNOT_UNKNOWN => :unknown,
@@ -64,8 +64,8 @@ module Rpdfium
         top: h - rect[:top], bottom: h - rect[:bottom] }
     end
 
-    # Valore di una chiave del dict di annotazione (UTF-16LE).
-    # Chiavi comuni: "Contents" (testo annotazione), "T" (autore),
+    # Value of a key in the annotation dict (UTF-16LE).
+    # Common keys: "Contents" (annotation text), "T" (author),
     # "M" (mod date), "NM" (uniq name).
     def [](key)
       Raw.read_utf16_string(:FPDFAnnot_GetStringValue, @state[:handle], key.to_s)
@@ -75,7 +75,7 @@ module Rpdfium
       Raw.FPDFAnnot_HasKey(@state[:handle], key.to_s) == 1
     end
 
-    # Per annotazioni :link → URL di destinazione (se esterno) o nil.
+    # For :link annotations → destination URL (if external) or nil.
     def link_uri
       return nil unless subtype == :link
 
@@ -88,7 +88,7 @@ module Rpdfium
       Raw.read_utf16_string(:FPDFAction_GetURIPath, @page.document.handle, action)
     end
 
-    # Per link interni → indice pagina di destinazione, o nil.
+    # For internal links → destination page index, or nil.
     def link_dest_page
       return nil unless subtype == :link
 

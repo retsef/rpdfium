@@ -34,8 +34,8 @@ module Rpdfium
 
         Raw.FPDF_InitLibrary
         @initialized = true
-        # Cleanup automatico a process exit. Ordine garantito: tutti i
-        # finalizer Ruby vengono eseguiti prima di at_exit dei nostri blocchi.
+        # Automatic cleanup at process exit. Order is guaranteed: all Ruby
+        # finalizers run before the at_exit of our own blocks.
         at_exit { Raw.FPDF_DestroyLibrary if @initialized }
       end
     end

@@ -2,39 +2,40 @@
 
 module Rpdfium
   module Structure
-    # StructTree di una pagina PDF tagged.
+    # StructTree of a tagged PDF page.
     #
-    # Per PDF tagged (PDF/UA, esport accessibility-friendly da
-    # Word/LibreOffice/InDesign), espone la struttura logica del documento:
-    # Document → P, H1, Table, TR, TH, TD, Figure, ecc.
+    # For tagged PDFs (PDF/UA, accessibility-friendly exports from
+    # Word/LibreOffice/InDesign), it exposes the logical structure of the
+    # document: Document → P, H1, Table, TR, TH, TD, Figure, etc.
     #
-    # Per PDF NON tagged, `Page#struct_tree` ritorna nil. Per PDF "tagged
-    # ma vuoti" (es. CR Banca d'Italia, StructTreeRoot presente ma con
-    # element placeholder senza type/MCID), `Tree#empty?` ritorna true.
+    # For NON-tagged PDFs, `Page#struct_tree` returns nil. For "tagged but
+    # empty" PDFs (e.g. CR Banca d'Italia, StructTreeRoot present but with
+    # placeholder elements without type/MCID), `Tree#empty?` returns true.
     #
-    # Lifecycle: il Tree mantiene un handle PDFium che è "owning" — chiamare
-    # `FPDF_StructTree_Close` lo dealloca. PDFium dealloca automaticamente
-    # lo struct tree alla chiusura del documento, quindi in pratica:
+    # Lifecycle: the Tree holds a PDFium handle that is "owning" — calling
+    # `FPDF_StructTree_Close` deallocates it. PDFium automatically
+    # deallocates the struct tree when the document is closed, so in
+    # practice:
     #
-    #   - se non chiudi mai il tree esplicitamente, PDFium lo libera con
-    #     `FPDF_CloseDocument` (zero perdita persistente, ma il tree resta
-    #     in memoria fino alla chiusura del doc — può essere ~MB)
-    #   - per controllo deterministico (rilascia subito), usa il blocco:
+    #   - if you never close the tree explicitly, PDFium frees it with
+    #     `FPDF_CloseDocument` (zero persistent leak, but the tree stays
+    #     in memory until the doc is closed — it may be ~MB)
+    #   - for deterministic control (release immediately), use the block:
     #
     #       page.struct_tree do |tree|
     #         tree.walk { |el| ... }
     #       end
-    #     all'uscita dal blocco il tree viene chiuso, anche su eccezione.
+    #     on exit from the block the tree is closed, even on exception.
     #
-    # Per scelta progettuale NON usiamo `ObjectSpace.define_finalizer`: se
-    # il GC chiamasse `FPDF_StructTree_Close` dopo che il documento è già
-    # stato chiuso, si avrebbe un use-after-free → segfault. La chiusura
-    # via Document è sempre sicura; la chiusura via Tree.close (esplicita
-    # o tramite blocco) richiede che il documento sia ancora vivo.
+    # As a design choice we do NOT use `ObjectSpace.define_finalizer`: if
+    # the GC were to call `FPDF_StructTree_Close` after the document had
+    # already been closed, this would cause a use-after-free → segfault.
+    # Closing via Document is always safe; closing via Tree.close (explicit
+    # or through a block) requires the document to still be alive.
     class Tree
       attr_reader :handle, :page
 
-      # Ritorna nil se la pagina non è tagged. Altrimenti un Tree.
+      # Returns nil if the page is not tagged. Otherwise a Tree.
       def self.for_page(page)
         h = Raw.FPDF_StructTree_GetForPage(page.handle)
         return nil if h.null?
@@ -48,23 +49,23 @@ module Rpdfium
         @closed = false
         @mcid_text_cache = nil
 
-        # NOTA: niente finalizer. FPDF_StructTree_Close è "owning": chiama
-        # ~CPDF_StructTree() che libera l'oggetto. Se il documento PDF
-        # viene chiuso prima del tree, il finalizer GC chiamerebbe Close
-        # su memoria già liberata → segfault. Lifetime sicuro:
-        #   - close esplicito via `tree.close` o via blocco
+        # NOTE: no finalizer. FPDF_StructTree_Close is "owning": it calls
+        # ~CPDF_StructTree() which frees the object. If the PDF document
+        # is closed before the tree, the GC finalizer would call Close on
+        # already-freed memory → segfault. Safe lifetime:
+        #   - explicit close via `tree.close` or via the block
         #     `page.struct_tree { |tree| ... }`
-        #   - se nessuno chiude esplicitamente, PDFium libera il tree
-        #     insieme al documento al `FPDF_CloseDocument` (no leak
-        #     persistent, solo riserva memoria fino a chiusura doc)
+        #   - if nobody closes it explicitly, PDFium frees the tree
+        #     together with the document at `FPDF_CloseDocument` (no
+        #     persistent leak, only memory held until the doc is closed)
       end
 
       def closed?
         @closed
       end
 
-      # Chiusura esplicita (idempotente). Dopo close, non chiamare metodi
-      # su questo Tree né sugli Element che ha generato.
+      # Explicit close (idempotent). After close, do not call methods on
+      # this Tree nor on the Elements it generated.
       def close
         return if @closed
 
@@ -73,15 +74,15 @@ module Rpdfium
         @mcid_text_cache = nil
       end
 
-      # Numero di element root (figli diretti del StructTreeRoot per
-      # questa pagina). Tipicamente 1 (`<Document>`), ma può essere
-      # arbitrariamente alto su PDF strani (es. cu.pdf: 717 placeholder).
+      # Number of root elements (direct children of the StructTreeRoot for
+      # this page). Typically 1 (`<Document>`), but it can be arbitrarily
+      # high on odd PDFs (e.g. cu.pdf: 717 placeholders).
       def root_count
         n = Raw.FPDF_StructTree_CountChildren(@handle)
         [n, 0].max
       end
 
-      # Element root (figli diretti del StructTreeRoot). Tipicamente 1
+      # Root elements (direct children of the StructTreeRoot). Typically 1
       # (`<Document>`).
       def roots
         (0...root_count).filter_map do |i|
@@ -90,42 +91,42 @@ module Rpdfium
         end
       end
 
-      # True se il tree è strutturalmente vuoto (nessun element con type
-      # leggibile dai root). Caso comune per PDF "fintamente tagged" come
-      # CR Banca d'Italia: il StructTreeRoot esiste ma gli element sono
-      # placeholder vuoti.
+      # True if the tree is structurally empty (no element with a readable
+      # type among the roots). A common case for "fake-tagged" PDFs such as
+      # CR Banca d'Italia: the StructTreeRoot exists but the elements are
+      # empty placeholders.
       def empty?
         return true if root_count.zero?
 
         roots.none? { |r| r.type || r.children.any? }
       end
 
-      # Walk depth-first di TUTTI gli element del tree. Equivalente a
-      # `roots.flat_map(&:walk)`. Senza block ritorna Enumerator.
+      # Depth-first walk of ALL the elements of the tree. Equivalent to
+      # `roots.flat_map(&:walk)`. Without a block it returns an Enumerator.
       def walk(&block)
         return enum_for(:walk) unless block
 
         roots.each { |r| r.walk(&block) }
       end
 
-      # Trova tutti gli element del tipo specificato (es. "Table", "P",
-      # "Figure"). Confronto case-sensitive (i tipi PDF sono "Table",
-      # "P", "H1", ecc.).
+      # Finds all the elements of the specified type (e.g. "Table", "P",
+      # "Figure"). Case-sensitive comparison (PDF types are "Table",
+      # "P", "H1", etc.).
       def find_all(type:)
         walk.select { |el| el.type == type }
       end
 
-      # Restituisce tutti gli element di tipo "Table". Conveniente per
-      # estrazione tabelle semantica.
+      # Returns all the elements of type "Table". Convenient for semantic
+      # table extraction.
       def tables
         find_all(type: "Table")
       end
 
-      # Page objects raggruppati per Marked Content ID, per consentire a
-      # Element#text di risolvere il testo dei suoi MCID. La mappa è
-      # costruita una sola volta per Tree e cached.
+      # Page objects grouped by Marked Content ID, to allow Element#text
+      # to resolve the text of its MCIDs. The map is built only once per
+      # Tree and cached.
       #
-      # Pubblico ma destinato a uso interno; non parte dell'API stabile.
+      # Public but intended for internal use; not part of the stable API.
       def mcid_text_map
         @mcid_text_cache ||= build_mcid_text_map
       end
@@ -137,9 +138,9 @@ module Rpdfium
 
       private
 
-      # Itera tutti i page objects (incl. Form XObject) e raggruppa il loro
-      # testo per MCID. Il pattern probe-then-fetch su FPDFTextObj_GetText
-      # è già rodato (vedi Page#read_text_obj_text_fast).
+      # Iterates all the page objects (incl. Form XObject) and groups their
+      # text by MCID. The probe-then-fetch pattern on FPDFTextObj_GetText
+      # is well-established (see Page#read_text_obj_text_fast).
       def build_mcid_text_map
         map = Hash.new { |h, k| h[k] = +"" }
         tp = @page.text_page
@@ -170,8 +171,8 @@ module Rpdfium
       end
 
       def read_text_obj_text(obj, tp, buf)
-        # Probe con buffer 1024 byte (sufficiente per il 99% dei marked
-        # content runs, che tipicamente sono parole singole o frasi brevi).
+        # Probe with a 1024-byte buffer (sufficient for 99% of marked
+        # content runs, which are typically single words or short phrases).
         needed = Raw.FPDFTextObj_GetText(obj, tp.handle, buf, 1024)
         return nil if needed < 2
 

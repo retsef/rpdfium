@@ -2,30 +2,31 @@
 
 module Rpdfium
   module Util
-    # Primitive di clustering 1D usate da tutto il pipeline tabellare.
-    # Mappa diretta su `pdfplumber.utils.clustering` (cluster_list,
+    # 1D clustering primitives used throughout the table pipeline.
+    # Direct mapping onto `pdfplumber.utils.clustering` (cluster_list,
     # cluster_objects, make_cluster_dict).
     #
-    # PROPRIETÀ CHIAVE: questi cluster sono "1D agglomerative single-linkage":
-    # due valori finiscono nello stesso cluster se sono entro `tolerance` da
-    # un valore qualsiasi del cluster. NON solo dal centro/media. Ne consegue
-    # che catene di valori ravvicinati possono estendere il cluster ben oltre
-    # `tolerance` (questo è esattamente il comportamento di pdfplumber, e su
-    # cui si appoggiano le sue euristiche edge/intersection).
+    # KEY PROPERTY: these clusters are "1D agglomerative single-linkage":
+    # two values end up in the same cluster if they are within
+    # `tolerance` of any value in the cluster. NOT only of the
+    # center/mean. As a result, chains of close values can extend the
+    # cluster well beyond `tolerance` (this is exactly pdfplumber's
+    # behavior, on which its edge/intersection heuristics rely).
     module Cluster
       module_function
 
-      # Raggruppa valori scalari in cluster. I valori dentro lo stesso cluster
-      # sono entro `tolerance` da almeno un altro valore del cluster.
+      # Groups scalar values into clusters. The values within the same
+      # cluster are within `tolerance` of at least one other value of
+      # the cluster.
       #
-      # Esempio:
+      # Example:
       #   cluster_list([1.0, 1.5, 2.0, 5.0], tolerance: 1.0)
       #   #=> [[1.0, 1.5, 2.0], [5.0]]
       #
-      # NOTA: Catene "stepping stone": [1, 2, 3, 4] con tol=1 fanno UN cluster
-      # solo, anche se 1 e 4 distano 3. Questo è il comportamento di
-      # pdfplumber, è documentato nei suoi issue come potenzialmente
-      # sorprendente ma intenzionale. Lo manteniamo identico.
+      # NOTE: "Stepping stone" chains: [1, 2, 3, 4] with tol=1 form a
+      # SINGLE cluster, even though 1 and 4 are 3 apart. This is
+      # pdfplumber's behavior, documented in its issues as potentially
+      # surprising but intentional. We keep it identical.
       def cluster_list(values, tolerance: 0)
         return [] if values.empty?
 
@@ -41,22 +42,23 @@ module Rpdfium
         clusters
       end
 
-      # Raggruppa oggetti (Hash) in cluster basandosi su una funzione di
-      # estrazione `key_fn` (oppure simbolo Hash key) e tolleranza.
+      # Groups objects (Hash) into clusters based on an extraction
+      # function `key_fn` (or a Hash key symbol) and a tolerance.
       #
-      # Esempio:
+      # Example:
       #   cluster_objects(words, ->(w) { w[:top] }, tolerance: 1)
       #   cluster_objects(words, :top, tolerance: 1)   # syntactic sugar
       def cluster_objects(objects, key_fn, tolerance: 0, presorted: false)
         return [] if objects.empty?
 
-        # Fast path per il caso Symbol più comune (:top, :x0, :bottom):
-        # accesso diretto Hash[symbol] è ~2× più veloce della lambda call.
+        # Fast path for the most common Symbol case (:top, :x0, :bottom):
+        # direct Hash[symbol] access is ~2x faster than the lambda call.
         if key_fn.is_a?(Symbol)
-          # Se il chiamante garantisce che l'input è già sortato per key_fn
-          # (es. perché viene da un sort lessicografico [key_fn, ...]) si
-          # può saltare il sort interno. Risparmio significativo quando
-          # cluster_objects è chiamato in loop su molte righe piccole.
+          # If the caller guarantees that the input is already sorted by
+          # key_fn (e.g. because it comes from a lexicographic sort
+          # [key_fn, ...]) the internal sort can be skipped. A significant
+          # saving when cluster_objects is called in a loop over many
+          # small rows.
           sorted = presorted ? objects : objects.sort_by { |o| o[key_fn] }
           first = sorted.first
           last_key = first[key_fn]
@@ -78,7 +80,7 @@ module Rpdfium
           return clusters
         end
 
-        # Path generico con accessor callable
+        # Generic path with a callable accessor
         accessor = key_fn
         sorted = presorted ? objects : objects.sort_by { |o| accessor.call(o) }
         last_key = accessor.call(sorted.first)
@@ -96,8 +98,8 @@ module Rpdfium
         clusters
       end
 
-      # bbox = [x0, top, x1, bottom] (top-down). Ritorna la bbox che racchiude
-      # tutti gli oggetti passati. Usa min/max di x0/top/x1/bottom.
+      # bbox = [x0, top, x1, bottom] (top-down). Returns the bbox that
+      # encloses all the passed objects. Uses min/max of x0/top/x1/bottom.
       def objects_to_bbox(objects)
         objects.each_with_object(
           [Float::INFINITY, Float::INFINITY, -Float::INFINITY, -Float::INFINITY]
@@ -109,16 +111,16 @@ module Rpdfium
         end
       end
 
-      # Variante che ritorna un Hash invece di tuple — comoda nel contesto
-      # edge dove ci serve mescolare bbox+orientation.
+      # Variant that returns a Hash instead of a tuple — handy in the
+      # edge context where we need to mix bbox+orientation.
       def objects_to_rect(objects)
         x0, top, x1, bottom = objects_to_bbox(objects)
         { x0: x0, top: top, x1: x1, bottom: bottom,
           width: x1 - x0, height: bottom - top }
       end
 
-      # bbox sovrapposti. None overlap => nil. Match pdfplumber's
-      # get_bbox_overlap: ritorna la bbox di intersezione, oppure nil.
+      # Overlapping bbox. No overlap => nil. Matches pdfplumber's
+      # get_bbox_overlap: returns the intersection bbox, or nil.
       def bbox_overlap(a, b)
         ax0, atop, ax1, abot = a
         bx0, btop, bx1, bbot = b
@@ -133,8 +135,8 @@ module Rpdfium
         [x0, top, x1, bot]
       end
 
-      # True se due bbox si sovrappongono (anche solo a un punto è no, deve
-      # esserci area positiva).
+      # True if two bbox overlap (even just at a point is no; there must
+      # be positive area).
       def bbox_overlaps?(a, b)
         !bbox_overlap(a, b).nil?
       end

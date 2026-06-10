@@ -2,11 +2,11 @@
 
 module Rpdfium
   module Image
-    # Wrapper per un image object inserito in una pagina. Permette di:
-    # - leggere metadata (dimensione pixel, DPI, colorspace, BPP)
-    # - ottenere bytes raw (così come stoccati: tipicamente JPEG)
-    # - ottenere bytes decoded (raster post-filtri)
-    # - ottenere bitmap renderizzato (con maschere e matrice applicate)
+    # Wrapper for an image object placed in a page. Allows you to:
+    # - read metadata (pixel size, DPI, colorspace, BPP)
+    # - obtain raw bytes (as stored: typically JPEG)
+    # - obtain decoded bytes (raster after filters)
+    # - obtain a rendered bitmap (with masks and matrix applied)
     class Embedded
       COLORSPACES = {
         0 => :unknown, 1 => :devicegray, 2 => :devicergb, 3 => :devicecmyk,
@@ -55,8 +55,8 @@ module Rpdfium
           top: h - t.read_float, bottom: h - b.read_float }
       end
 
-      # Filtri applicati nell'ordine PDF: es. ["DCTDecode"] → JPEG,
-      # ["FlateDecode"] → zlib, ["DCTDecode","DCTDecode"] → ricodifiche.
+      # Filters applied in PDF order: e.g. ["DCTDecode"] → JPEG,
+      # ["FlateDecode"] → zlib, ["DCTDecode","DCTDecode"] → re-encodings.
       def filters
         n = Raw.FPDFImageObj_GetImageFilterCount(@handle)
         Array.new(n) do |i|
@@ -72,8 +72,9 @@ module Rpdfium
         end
       end
 
-      # Bytes "raw": come sono stoccati nel PDF. Se filters == ["DCTDecode"]
-      # questi bytes sono un JPEG completo che puoi salvare con estensione .jpg.
+      # "Raw" bytes: as they are stored in the PDF. If filters ==
+      # ["DCTDecode"] these bytes are a complete JPEG that you can save
+      # with a .jpg extension.
       def raw_bytes
         len = Raw.FPDFImageObj_GetImageDataRaw(@handle, FFI::Pointer::NULL, 0)
         return "" if len.zero?
@@ -83,8 +84,8 @@ module Rpdfium
         buf.read_bytes(len)
       end
 
-      # Bytes decoded: pixel raster dopo l'applicazione dei filtri.
-      # Layout dipende dal colorspace.
+      # Decoded bytes: raster pixels after the filters are applied.
+      # Layout depends on the colorspace.
       def decoded_bytes
         len = Raw.FPDFImageObj_GetImageDataDecoded(@handle, FFI::Pointer::NULL, 0)
         return "" if len.zero?
@@ -94,7 +95,7 @@ module Rpdfium
         buf.read_bytes(len)
       end
 
-      # Bitmap renderizzato applicando matrice e maschere. Ritorna [w, h, bytes(BGRA)].
+      # Bitmap rendered applying matrix and masks. Returns [w, h, bytes(BGRA)].
       def render_bitmap
         bitmap = Raw.FPDFImageObj_GetRenderedBitmap(
           @page.document.handle, @page.handle, @handle
@@ -112,14 +113,14 @@ module Rpdfium
         end
       end
 
-      # Salva il file. Se i filtri sono DCTDecode → scrive .jpg diretto.
-      # Altrimenti renderizza il bitmap a PNG.
+      # Saves the file. If the filters are DCTDecode → writes a direct
+      # .jpg. Otherwise renders the bitmap to PNG.
       def save(path)
         if filters == ["DCTDecode"]
           File.binwrite(path, raw_bytes)
         else
           w, h, bytes, stride = render_bitmap
-          # I bitmap resi sono BGRA: convertiamo a RGBA per il PNG writer
+          # The rendered bitmaps are BGRA: we convert to RGBA for the PNG writer
           rgba = swap_bgra_to_rgba(bytes, w, h, stride)
           Rpdfium::IO::PNG.write(path, w, h, rgba, stride: w * 4)
         end
@@ -132,7 +133,7 @@ module Rpdfium
         out = String.new(capacity: w * h * 4, encoding: Encoding::ASCII_8BIT)
         h.times do |y|
           row = bgra.byteslice(y * stride, w * 4)
-          # Scambia B<->R per ogni pixel
+          # Swap B<->R for each pixel
           (0...row.bytesize).step(4) do |i|
             out << row.getbyte(i + 2) << row.getbyte(i + 1) <<
                    row.getbyte(i)     << row.getbyte(i + 3)

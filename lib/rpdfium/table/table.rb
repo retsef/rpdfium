@@ -2,12 +2,12 @@
 
 module Rpdfium
   module Table
-    # Rappresenta una tabella trovata su una pagina. Espone celle, righe,
-    # colonne, bbox, e il metodo `extract` che ritorna i dati testuali.
+    # Represents a table found on a page. Exposes cells, rows,
+    # columns, bbox, and the `extract` method that returns the textual data.
     #
-    # Ogni cella è una bbox `[x0, top, x1, bottom]` (top-down).
-    # Una "row" è il gruppo di celle che condividono la stessa `top`.
-    # Una "column" è il gruppo che condivide la stessa `x0`.
+    # Each cell is a bbox `[x0, top, x1, bottom]` (top-down).
+    # A "row" is the group of cells sharing the same `top`.
+    # A "column" is the group sharing the same `x0`.
     class Table
       attr_reader :page, :cells
 
@@ -27,9 +27,9 @@ module Rpdfium
         end
       end
 
-      # Restituisce le righe come Array<Array<bbox|nil>>. Le celle "mancanti"
-      # in una riga (es. perché la tabella ha una topologia irregolare) sono
-      # rappresentate come nil — coerente con pdfplumber.
+      # Returns the rows as Array<Array<bbox|nil>>. The "missing" cells
+      # in a row (e.g. because the table has an irregular topology) are
+      # represented as nil — consistent with pdfplumber.
       def rows
         rows_or_columns(:row)
       end
@@ -38,57 +38,58 @@ module Rpdfium
         rows_or_columns(:col)
       end
 
-      # Estrai dati: Array<Array<String>>. Per ogni riga, per ogni cella,
-      # filtra i char della pagina il cui MIDPOINT è nella bbox della cella,
-      # poi ricostruisce il testo via Util::TextExtraction (che a sua volta
-      # passa da WordExtractor).
+      # Extract data: Array<Array<String>>. For each row, for each cell,
+      # filter the page chars whose MIDPOINT lies within the cell's bbox,
+      # then reconstruct the text via Util::TextExtraction (which in turn
+      # goes through WordExtractor).
       #
-      # Questo è il path di pdfplumber.Table.extract — per ogni riga prima
-      # filtra i char della riga (ottimizzazione: quasi tutti i char delle
-      # altre righe vengono scartati subito), poi per ogni cella filtra
-      # ancora dentro la sub-bbox.
+      # This is the pdfplumber.Table.extract path — for each row it first
+      # filters the row's chars (optimization: nearly all chars from the
+      # other rows are discarded immediately), then for each cell filters
+      # again within the sub-bbox.
       #
-      # Ottimizzazione rispetto al path naïve: i char vengono ordinati per
-      # midpoint verticale una sola volta; per ogni riga si usa bsearch per
-      # trovare in O(log n) i char candidati invece di scansionare tutto
-      # l'array O(n) per ogni riga.
+      # Optimization over the naïve path: the chars are sorted by their
+      # vertical midpoint only once; for each row bsearch is used to find
+      # the candidate chars in O(log n) instead of scanning the whole
+      # array O(n) for every row.
       #
-      # NOTA su strategia :text: `words_to_edges_h` emette per design DUE
-      # edges per riga (top e bottom della bbox del cluster). Significa che
-      # una tabella detectata da text-strategy avrà righe "vere" intervallate
-      # da righe "vuote" tra il bottom-edge della riga N e il top-edge della
-      # riga N+1. Questo è identico al comportamento di pdfplumber. Il
-      # caller può filtrare via `result.reject { |row| row.all?(&:empty?) }`
-      # se vuole eliminarle.
-      # `cell_padding`: estende il bbox di ogni cella verso sinistra e verso
-      # l'alto di N punti. Default 0 (= comportamento pdfplumber identico).
-      # Utile per PDF dove i char sporgono leggermente dal bordo della cella
-      # (es. la "I" maiuscola della cella "Intermediario" in CR Banca d'Italia
-      # ha x0=24.0 ma il bordo della cella è a x=25.6 — viene scartata dal
-      # filtro midpoint, output "ntermediario:"). Con `cell_padding: 2.0` la
-      # cella diventa [23.6, ..., 100, ...] e la "I" viene catturata.
+      # NOTE on the :text strategy: `words_to_edges_h` emits by design TWO
+      # edges per row (top and bottom of the cluster bbox). This means that
+      # a table detected by the text-strategy will have "real" rows
+      # interleaved with "empty" rows between the bottom-edge of row N and
+      # the top-edge of row N+1. This is identical to pdfplumber's behavior.
+      # The caller may filter via `result.reject { |row| row.all?(&:empty?) }`
+      # if it wants to drop them.
+      # `cell_padding`: extends each cell's bbox toward the left and toward
+      # the top by N points. Default 0 (= identical pdfplumber behavior).
+      # Useful for PDFs where chars protrude slightly past the cell border
+      # (e.g. the uppercase "I" of the "Intermediario" cell in a CR Banca
+      # d'Italia form has x0=24.0 but the cell border is at x=25.6 — it gets
+      # discarded by the midpoint filter, output "ntermediario:"). With
+      # `cell_padding: 2.0` the cell becomes [23.6, ..., 100, ...] and the
+      # "I" is captured.
       #
-      # Padding solo sui bordi "interno-sinistro" e "interno-alto" per
-      # evitare di duplicare char condivisi tra celle adiacenti (un char tra
-      # cella A e cella B finirebbe in entrambe se entrambe paddassero su
-      # tutti i lati).
+      # Padding only on the "inner-left" and "inner-top" borders to avoid
+      # duplicating chars shared between adjacent cells (a char between
+      # cell A and cell B would end up in both if both padded on all
+      # sides).
       def extract(x_tolerance: Util::WordExtractor::DEFAULT_X_TOLERANCE,
                   y_tolerance: Util::WordExtractor::DEFAULT_Y_TOLERANCE,
                   keep_blank_chars: false,
                   cell_padding: 0.0)
-        # `lean: true`: salta 5 chiamate FFI per char (font name, weight,
-        # angle, hyphen flag, unicode error) che non servono al pipeline
-        # di estrazione tabelle. Su tabelle con migliaia di char riduce
-        # il tempo di compute_chars del ~30%.
+        # `lean: true`: skips 5 FFI calls per char (font name, weight,
+        # angle, hyphen flag, unicode error) that are not needed by the
+        # table-extraction pipeline. On tables with thousands of chars it
+        # reduces compute_chars time by ~30%.
         chars = @page.chars(lean: true)
 
-        # Ordina per midpoint verticale una volta sola; costruisce un array
-        # parallelo di vmid per bsearch. Costo: O(n log n) una tantum.
+        # Sort by vertical midpoint once; build a parallel array of vmid
+        # for bsearch. Cost: O(n log n) one-time.
         sorted_chars = chars.sort_by { |c| (c[:top] + c[:bottom]) / 2.0 }
         vmids = sorted_chars.map { |c| (c[:top] + c[:bottom]) / 2.0 }
 
-        # Istanzia WordExtractor UNA volta sola e riusalo per tutte le celle
-        # (può esserci una tabella con decine di celle, evitiamo allocazioni).
+        # Instantiate WordExtractor ONCE and reuse it for all cells
+        # (a table may have dozens of cells; avoid allocations).
         word_extractor = Util::WordExtractor.new(
           x_tolerance: x_tolerance,
           y_tolerance: y_tolerance,
@@ -118,8 +119,8 @@ module Rpdfium
 
       private
 
-      # Versione "inlined" di Util::TextExtraction.extract_text che riusa
-      # un WordExtractor preesistente invece di crearlo ogni volta.
+      # "Inlined" version of Util::TextExtraction.extract_text that reuses
+      # a pre-existing WordExtractor instead of creating one every time.
       def extract_text_with(chars, word_extractor, y_tolerance)
         words = word_extractor.extract_words(chars)
         return "" if words.empty?
@@ -132,15 +133,15 @@ module Rpdfium
 
       def pad_cell_bbox(bbox, padding)
         x0, top, x1, bottom = bbox
-        # Estendi solo i bordi "interno-sinistro" e "interno-alto" per evitare
-        # di catturare char della cella adiacente destra/sotto.
+        # Extend only the "inner-left" and "inner-top" borders to avoid
+        # capturing chars from the adjacent cell to the right/below.
         [x0 - padding, top - padding, x1, bottom]
       end
 
-      # Test "char midpoint dentro bbox" — esattamente come pdfplumber.
-      # Il midpoint del char (non gli estremi della bbox) è il criterio:
-      # un char a cavallo del bordo viene assegnato alla cella in cui ha
-      # più "peso visivo".
+      # Test "char midpoint inside bbox" — exactly like pdfplumber.
+      # The char's midpoint (not the bbox extremes) is the criterion:
+      # a char straddling the border is assigned to the cell in which it
+      # has more "visual weight".
       def char_in_bbox?(char, bbox)
         x0, top, x1, bottom = bbox
         h_mid = (char[:x0] + char[:x1]) / 2.0
@@ -159,15 +160,15 @@ module Rpdfium
         end
       end
 
-      # Ricostruisce righe o colonne. axis 0 = x (per row clustering antiaxis=top),
-      # axis 1 = top (per column clustering antiaxis=x0). Usa il key invariante
-      # come "anchor" e il key variabile come ordering interno.
+      # Reconstructs rows or columns. axis 0 = x (for row clustering antiaxis=top),
+      # axis 1 = top (for column clustering antiaxis=x0). Uses the invariant key
+      # as "anchor" and the variable key as the internal ordering.
       def rows_or_columns(kind)
-        # Per row: sortBy = top, antiaxis = x0
-        # Per col: sortBy = x0, antiaxis = top
+        # For row: sortBy = top, antiaxis = x0
+        # For col: sortBy = x0, antiaxis = top
         sort_idx, group_idx = kind == :row ? [1, 0] : [0, 1]
 
-        # Tutti gli x0 (per row) o top (per col) distinti, sortati
+        # All distinct x0 (for row) or top (for col), sorted
         all_keys = @cells.map { |c| c[group_idx] }.uniq.sort
 
         # Group by sort_idx

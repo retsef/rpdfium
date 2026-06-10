@@ -2,26 +2,28 @@
 
 module Rpdfium
   module Util
-    # Inferenza di colonne dati su PDF non-tabellari.
+    # Inference of data columns on non-tabular PDFs.
     #
-    # Identifica gruppi di word che appartengono alla stessa "colonna"
-    # verticale di un layout (es. una colonna di importi in un modulo
-    # prestampato) anche quando non ci sono linee disegnate.
+    # Identifies groups of words that belong to the same vertical
+    # "column" of a layout (e.g. a column of amounts in a prestamped
+    # form) even when no lines are drawn.
     #
-    # L'algoritmo opera in tre passaggi:
+    # The algorithm operates in three passes:
     #
-    # 1. **Cluster per coordinata X** — raggruppa le word con la stessa x0
-    #    (left-aligned) o x1 (right-aligned, tipico dei numeri) entro la
-    #    tolleranza configurabile.
+    # 1. **Cluster by X coordinate** — groups words with the same x0
+    #    (left-aligned) or x1 (right-aligned, typical of numbers) within
+    #    the configurable tolerance.
     #
-    # 2. **Spezza per gap verticali** — se due word consecutive in un
-    #    gruppo hanno un gap verticale "anomalo" (> 3× la mediana, o
-    #    > 40pt), le separa in colonne distinte. Risolve casi tipo "codice
-    #    fiscale in alto + tabella sotto" che condividono la stessa X.
+    # 2. **Split by vertical gaps** — if two consecutive words in a
+    #    group have an "anomalous" vertical gap (> 3x the median, or
+    #    > 40pt), they are separated into distinct columns. Resolves
+    #    cases such as "fiscal code at the top + table below" that share
+    #    the same X.
     #
-    # 3. **Filtra per densità** — una colonna "vera" ha valori regolarmente
-    #    equispaziati (coefficiente di variazione dei gap < soglia). Esclude
-    #    falsi positivi come valori isolati che si trovano per caso allineati.
+    # 3. **Filter by density** — a "true" column has regularly
+    #    equispaced values (coefficient of variation of the gaps <
+    #    threshold). Excludes false positives such as isolated values
+    #    that happen to be aligned by chance.
     #
     # @example
     #   inference = Rpdfium::Util::ColumnInference.new(
@@ -31,8 +33,8 @@ module Rpdfium
     #   )
     #   columns = inference.infer(words)
     #   # => [
-    #   #   [word1, word2, ..., word12],   # 12 importi nella colonna 1
-    #   #   [word1, word2, ..., word12]    # 12 codici nella colonna 2
+    #   #   [word1, word2, ..., word12],   # 12 amounts in column 1
+    #   #   [word1, word2, ..., word12]    # 12 codes in column 2
     #   # ]
     class ColumnInference
       DEFAULT_X_TOLERANCE = 3.0
@@ -53,27 +55,27 @@ module Rpdfium
         @gap_absolute = gap_absolute
       end
 
-      # Inferisce le colonne dai word forniti. Usa sia x0 (left-align) che
-      # x1 (right-align) come criteri di allineamento, ritorna l'unione
-      # delle colonne identificate.
+      # Infers the columns from the supplied words. Uses both x0
+      # (left-align) and x1 (right-align) as alignment criteria, returns
+      # the union of the identified columns.
       #
-      # @param words [Array<Hash>] word con :x0, :x1, :top
-      # @return [Array<Array<Hash>>] array di colonne, ognuna è un array
-      #   di word ordinati per :top crescente
+      # @param words [Array<Hash>] words with :x0, :x1, :top
+      # @return [Array<Array<Hash>>] array of columns, each one an array
+      #   of words ordered by ascending :top
       def infer(words)
         return [] if words.empty?
 
         by_x0 = cluster_by(words, :x0)
         by_x1 = cluster_by(words, :x1)
 
-        # Unione: una word può apparire in più colonne. È compito del
-        # chiamante decidere come gestire (es. preferire la prima
-        # colonna, o quella più grande). Qui ritorniamo tutte.
+        # Union: a word may appear in more than one column. It is the
+        # caller's responsibility to decide how to handle this (e.g.
+        # prefer the first column, or the largest one). Here we return all.
         (by_x0 + by_x1)
       end
 
-      # Cluster di word per una specifica coordinata.
-      # @param coord [Symbol] :x0 o :x1
+      # Clusters words by a specific coordinate.
+      # @param coord [Symbol] :x0 or :x1
       def cluster_by(words, coord)
         sorted = words.sort_by { |v| v[coord] }
         x_groups = []
@@ -116,10 +118,10 @@ module Rpdfium
         columns
       end
 
-      # Una colonna è "abbastanza densa" se ha almeno min_size valori e
-      # il coefficiente di variazione (std_dev/mean) dei gap verticali è
-      # sotto la soglia. CV bassa = spacing regolare = colonna ripetitiva
-      # vera (vs. valori sparsi accidentalmente allineati).
+      # A column is "dense enough" if it has at least min_size values
+      # and the coefficient of variation (std_dev/mean) of the vertical
+      # gaps is below the threshold. Low CV = regular spacing = a true
+      # repetitive column (vs. scattered values accidentally aligned).
       def dense_enough?(col_values)
         return false if col_values.size < @min_size
 

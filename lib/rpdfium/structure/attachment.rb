@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Rpdfium
-  # File embedded nel PDF (allegati). PDFium li espone via FPDFDoc_GetAttachment.
+  # Files embedded in the PDF (attachments). PDFium exposes them via FPDFDoc_GetAttachment.
   class Attachment
     attr_reader :document, :index, :handle
 
@@ -16,7 +16,7 @@ module Rpdfium
       Raw.read_utf16_string(:FPDFAttachment_GetName, @handle)
     end
 
-    # Ritorna i bytes del file allegato. Pattern probe-then-fetch.
+    # Returns the bytes of the attached file. Probe-then-fetch pattern.
     def bytes
       out_size = FFI::MemoryPointer.new(:ulong)
       Raw.FPDFAttachment_GetFile(@handle, FFI::Pointer::NULL, 0, out_size)
@@ -25,10 +25,10 @@ module Rpdfium
 
       buf = FFI::MemoryPointer.new(:uchar, n)
       Raw.FPDFAttachment_GetFile(@handle, buf, n, out_size)
-      # Leggo n byte (la dimensione del MIO buffer), non out_size.read_ulong:
-      # PDFium può aggiornare out_size con un valore diverso da n (es. dim
-      # totale necessaria) che leggerebbe oltre il buffer → IndexError.
-      # Se la write effettiva è < n, riempie il resto con NUL.
+      # Read n bytes (the size of OUR buffer), not out_size.read_ulong:
+      # PDFium may update out_size with a value different from n (e.g. the
+      # total size required), which would read past the buffer → IndexError.
+      # If the actual write is < n, the remainder is filled with NUL.
       buf.read_bytes(n)
     end
 

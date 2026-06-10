@@ -2,28 +2,29 @@
 
 module Rpdfium
   module Util
-    # Estrae "words" da una lista di char, fedelmente a pdfplumber.WordExtractor.
+    # Extracts "words" from a list of chars, faithfully to
+    # pdfplumber.WordExtractor.
     #
-    # Algoritmo:
-    #   1. Ordina i char per (top, x0): righe top-to-bottom, char left-to-right
-    #      dentro ogni riga.
-    #   2. Cluster per top con `y_tolerance` → "righe logiche" di char.
-    #   3. Dentro ogni riga, cluster per gap orizzontale: due char sono nella
-    #      stessa word se `next.x0 - prev.x1 <= x_tolerance`. Anche un char
-    #      whitespace separa la word (a meno che `keep_blank_chars`).
-    #   4. Per ogni cluster di char emette una word: text concatenato, bbox.
+    # Algorithm:
+    #   1. Sort the chars by (top, x0): rows top-to-bottom, chars
+    #      left-to-right within each row.
+    #   2. Cluster by top with `y_tolerance` → "logical rows" of chars.
+    #   3. Within each row, cluster by horizontal gap: two chars belong to
+    #      the same word if `next.x0 - prev.x1 <= x_tolerance`. A whitespace
+    #      char also separates the word (unless `keep_blank_chars`).
+    #   4. For each cluster of chars, emit a word: concatenated text, bbox.
     #
-    # Differenze da pdfplumber (semplificazioni accettabili per il nostro uso):
-    #   - Non gestiamo `line_dir`/`char_dir` rotated (testo ruotato non
-    #     orizzontale ltr): non rilevante per i casi d'uso correnti.
-    #   - Non gestiamo `use_text_flow` (ordering basato sul content stream):
-    #     i nostri char arrivano già da PDFium nell'ordine geometrico via
-    #     `chars` (top, x0).
-    #   - Non gestiamo `expand_ligatures`: PDFium di solito espande i
-    #     codepoint correttamente già a livello char.
+    # Differences from pdfplumber (simplifications acceptable for our use):
+    #   - We do not handle rotated `line_dir`/`char_dir` (text rotated away
+    #     from horizontal ltr): not relevant for current use cases.
+    #   - We do not handle `use_text_flow` (ordering based on the content
+    #     stream): our chars already arrive from PDFium in geometric order
+    #     via `chars` (top, x0).
+    #   - We do not handle `expand_ligatures`: PDFium usually expands the
+    #     codepoints correctly already at the char level.
     #
-    # Queste differenze sono documentate; se mai necessarie si aggiungono
-    # come feature toggles senza cambiare il path di default.
+    # These differences are documented; if ever needed they can be added
+    # as feature toggles without changing the default path.
     class WordExtractor
       DEFAULT_X_TOLERANCE = 3.0
       DEFAULT_Y_TOLERANCE = 3.0
@@ -40,13 +41,13 @@ module Rpdfium
         @extra_attrs = extra_attrs || []
       end
 
-      # Restituisce un Array di Hash: { text:, x0:, x1:, top:, bottom:, chars: }.
-      # Se `extra_attrs` è non vuoto, ogni word splitta anche al cambio di
-      # questi attributi (es. fontname/size diversi → word diverse).
+      # Returns an Array of Hash: { text:, x0:, x1:, top:, bottom:, chars: }.
+      # If `extra_attrs` is non-empty, each word also splits when these
+      # attributes change (e.g. different fontname/size → different words).
       def extract_words(chars)
         return [] if chars.empty?
 
-        # Fast path: 1 solo char → 1 word triviale (se non whitespace).
+        # Fast path: a single char → 1 trivial word (if not whitespace).
         if chars.size == 1
           c = chars.first
           return [] if blank?(c) && !@keep_blank_chars
@@ -54,35 +55,35 @@ module Rpdfium
           return [build_word([c])]
         end
 
-        # 1. Ordina per (top, x0). Top-down, left-to-right.
+        # 1. Sort by (top, x0). Top-down, left-to-right.
         sorted = chars.sort_by { |c| [c[:top], c[:x0]] }
 
-        # 2. Cluster in righe per `top`.
-        # `presorted: true`: sorted è già ordinato per [top, x0], quindi
-        # implicitamente anche per top — cluster_objects salta il proprio
-        # sort interno.
+        # 2. Cluster into rows by `top`.
+        # `presorted: true`: sorted is already ordered by [top, x0], hence
+        # implicitly also by top — cluster_objects skips its own internal
+        # sort.
         rows = Cluster.cluster_objects(sorted, :top,
                                         tolerance: @y_tolerance,
                                         presorted: true)
 
         words = []
         rows.each do |row|
-          # Re-sort per x0 dentro ogni riga clusterizzata.
+          # Re-sort by x0 within each clustered row.
           #
-          # NOTA: in linea di principio l'input `sorted` è già ordinato per
-          # [top, x0], quindi i cluster di top dovrebbero essere già in
-          # ordine x0. MA il sort globale `[top, x0]` rispetta strettamente
-          # l'ordine per top — se due char della stessa riga visiva hanno
-          # top diversi entro tolerance (es. la "i" minuscola spesso ha
-          # top più alto di 0.008pt rispetto alle altre lettere a causa di
-          # come PDFium calcola la bbox), il sort globale li interfoglia.
-          # Il cluster_objects per :top non riordina internamente i char,
-          # quindi un char con top leggermente minore finisce DAVANTI a
-          # tutte le altre lettere della parola.
+          # NOTE: in principle the input `sorted` is already ordered by
+          # [top, x0], so the top clusters should already be in x0 order.
+          # BUT the global sort `[top, x0]` strictly respects the order by
+          # top — if two chars of the same visual row have different tops
+          # within tolerance (e.g. the lowercase "i" often has a top higher
+          # by 0.008pt than the other letters because of how PDFium computes
+          # the bbox), the global sort interleaves them. cluster_objects by
+          # :top does not internally reorder the chars, so a char with a
+          # slightly lower top ends up AHEAD of all the other letters of the
+          # word.
           #
-          # Esempio reale: "Categoria" dove "i" ha top=414.9789 e le altre
-          # 414.9869 → output `iCategora` invece di `Categoria`.
-          # Il fix è semplicemente ri-sortare per x0 dentro la riga.
+          # Real example: "Categoria" where "i" has top=414.9789 and the
+          # others 414.9869 → output `iCategora` instead of `Categoria`.
+          # The fix is simply to re-sort by x0 within the row.
           row_sorted = row.sort_by { |c| c[:x0] }
 
           word_chars = []
@@ -91,8 +92,8 @@ module Rpdfium
               words << build_word(word_chars) unless word_chars.empty?
               word_chars = []
             end
-            # Whitespace: per default lo usiamo come separatore (lo scartiamo).
-            # Con keep_blank_chars=true lo includiamo nella word corrente.
+            # Whitespace: by default we use it as a separator (we discard it).
+            # With keep_blank_chars=true we include it in the current word.
             if blank?(c) && !@keep_blank_chars
               words << build_word(word_chars) unless word_chars.empty?
               word_chars = []
@@ -111,15 +112,15 @@ module Rpdfium
       def char_begins_new_word?(prev, curr)
         return false if prev.nil?
 
-        # Gap orizzontale (PDF font hinting può dare overlap leggero, max 0)
+        # Horizontal gap (PDF font hinting may give a slight overlap, max 0)
         gap = curr[:x0] - prev[:x1]
         return true if gap > @x_tolerance
 
-        # Cambio di riga (può succedere se y_tolerance è grande ma due
-        # char sono comunque su righe diverse)
+        # Row change (can happen if y_tolerance is large but two chars are
+        # nonetheless on different rows)
         return true if (curr[:top] - prev[:top]).abs > @y_tolerance
 
-        # Cambio di un extra_attr richiesto
+        # Change of a required extra_attr
         @extra_attrs.any? { |attr| prev[attr] != curr[attr] }
       end
 

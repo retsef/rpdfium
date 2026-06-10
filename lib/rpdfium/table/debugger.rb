@@ -2,12 +2,12 @@
 
 module Rpdfium
   module Table
-    # Genera una visualizzazione di debug: la pagina renderizzata in PNG con
-    # sovrapposti gli edges rilevati e i bbox delle celle. Equivalente di
+    # Generates a debug visualization: the page rendered to PNG with the
+    # detected edges and cell bboxes overlaid. Equivalent to
     # pdfplumber.Page.to_image().debug_tablefinder().
     #
-    # Implementato puro Ruby: rasterizza la pagina via render(), poi disegna
-    # sopra il bitmap manipolando i bytes RGBA, infine salva in PNG.
+    # Implemented in pure Ruby: rasterizes the page via render(), then draws
+    # over the bitmap by manipulating the RGBA bytes, and finally saves to PNG.
     module Debugger
       module_function
 
@@ -24,19 +24,19 @@ module Rpdfium
         w, h, bytes, _stride = page.render(scale: scale, output: :rgba)
         canvas = Canvas.new(w, h, bytes)
 
-        # Disegna edges. Nuovo formato: ogni edge ha orientation + x0/x1/top/bottom.
-        # Un edge orizzontale ha top == bottom; un verticale ha x0 == x1.
+        # Draws edges. New format: each edge has orientation + x0/x1/top/bottom.
+        # A horizontal edge has top == bottom; a vertical one has x0 == x1.
         edges.each do |e|
           canvas.line((e[:x0] * scale).to_i, (e[:top]    * scale).to_i,
                        (e[:x1] * scale).to_i, (e[:bottom] * scale).to_i, RED)
         end
 
-        # Disegna intersezioni (cerchi 4px). Sono Hash con chiave [x, y].
+        # Draws intersections (4px circles). They are Hashes keyed by [x, y].
         intersections.each_key do |(x, y)|
           canvas.dot((x * scale).to_i, (y * scale).to_i, GREEN, 4)
         end
 
-        # Riempie tabelle con blu trasparente. Table#bbox è tuple [x0, top, x1, bottom].
+        # Fills tables with transparent blue. Table#bbox is the tuple [x0, top, x1, bottom].
         tables.each do |t|
           x0, top, x1, bottom = t.bbox
           canvas.rect_fill((x0 * scale).to_i, (top    * scale).to_i,
@@ -48,15 +48,15 @@ module Rpdfium
       end
     end
 
-    # Mini canvas RGBA per disegnare sopra il rendering. Niente di sofisticato:
-    # linee Bresenham, dots, rect fill con alpha blending semplice.
+    # Minimal RGBA canvas for drawing over the rendering. Nothing sophisticated:
+    # Bresenham lines, dots, rect fill with simple alpha blending.
     class Canvas
       attr_reader :bytes, :width, :height
 
       def initialize(width, height, rgba_bytes)
         @width  = width
         @height = height
-        # Lavoriamo su una stringa mutabile (binstring)
+        # We work on a mutable string (binstring)
         @bytes = rgba_bytes.dup.force_encoding(Encoding::ASCII_8BIT)
       end
 
@@ -71,7 +71,7 @@ module Rpdfium
           @bytes.setbyte(idx + 2, b)
           @bytes.setbyte(idx + 3, 255)
         else
-          # Alpha blending semplice (over operator)
+          # Simple alpha blending (over operator)
           src_a = a / 255.0
           inv = 1 - src_a
           @bytes.setbyte(idx,     (r * src_a + @bytes.getbyte(idx)     * inv).to_i)

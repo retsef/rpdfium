@@ -2,29 +2,29 @@
 
 module Rpdfium
   module Util
-    # Associa label semantiche a valori inseriti su PDF di moduli compilati
-    # (F24, comunicazioni IVA, modelli 770) dove template e dati coesistono
-    # come testo grafico in font diversi.
+    # Associates semantic labels with values placed on PDFs of filled-in
+    # forms (F24, VAT communications, Modello 770) where template and data
+    # coexist as graphic text in different fonts.
     #
-    # Strategia base:
+    # Base strategy:
     #
-    # 1. **Cluster** le parole del template in "label coerenti": word
-    #    geometricamente vicine formano un'unica label.
+    # 1. **Cluster** the template words into "coherent labels": words that
+    #    are geometrically close form a single label.
     #
-    # 2. **Per ogni valore** cerca:
-    #    - `:col` — label SOPRA in stessa colonna
-    #    - `:row` — label A SINISTRA in stessa riga
+    # 2. **For each value** search for:
+    #    - `:col` — the label ABOVE in the same column
+    #    - `:row` — the label TO THE LEFT in the same row
     #
-    # 3. (Opzionale) **Riassegnazione per colonne**: usa `ColumnInference`
-    #    per identificare colonne ripetitive (es. ST2..ST13 del 770 Quadro
-    #    ST) e propaga l'header canonico a tutti i valori della colonna,
-    #    superando il limite `col_max_dy`.
+    # 3. (Optional) **Column reassignment**: uses `ColumnInference` to
+    #    identify repetitive columns (e.g. ST2..ST13 of the 770 Quadro
+    #    ST) and propagates the canonical header to all the values in the
+    #    column, overriding the `col_max_dy` limit.
     #
-    # @example uso base
+    # @example basic usage
     #   matcher = Rpdfium::Util::LabelMatcher.new
     #   matcher.match(value_words, anchor_words)
     #
-    # @example con tabelle ripetitive (header in cima alla colonna)
+    # @example with repetitive tables (header at the top of the column)
     #   matcher = Rpdfium::Util::LabelMatcher.new(
     #     column_inference: Rpdfium::Util::ColumnInference.new
     #   )
@@ -60,11 +60,11 @@ module Rpdfium
         @column_inference = column_inference
       end
 
-      # Calcola le associazioni label → valore.
+      # Computes the label → value associations.
       #
-      # @param values [Array<Hash>] word del layer "dati"
-      # @param anchors [Array<Hash>] word del layer "template"
-      # @return [Array<Hash>] uno per valore: { value:, labels: { col:, row: }, geometry: }
+      # @param values [Array<Hash>] words of the "data" layer
+      # @param anchors [Array<Hash>] words of the "template" layer
+      # @return [Array<Hash>] one per value: { value:, labels: { col:, row: }, geometry: }
       def match(values, anchors)
         labels = cluster_anchors(anchors)
 
@@ -74,7 +74,7 @@ module Rpdfium
           { value: v, col: col, row: row }
         end
 
-        # Riassegnazione opzionale per colonne ripetitive
+        # Optional reassignment for repetitive columns
         prelim = reassign_by_columns(prelim, labels, values) if @column_inference
 
         prelim.map do |entry|
@@ -92,8 +92,8 @@ module Rpdfium
         end
       end
 
-      # Ricostruisce le label dal cluster delle word del template.
-      # Esposto pubblicamente per ispezione/debug.
+      # Reconstructs the labels from the cluster of template words.
+      # Exposed publicly for inspection/debug.
       def cluster_anchors(anchor_words)
         remaining = anchor_words.dup
         groups = []
@@ -145,10 +145,10 @@ module Rpdfium
       end
 
       def find_col_label(value, labels)
-        # Per word "wide" (più larghe della maggior parte delle label,
-        # tipicamente perché frutto di merge di una stringa che attraversa
-        # più colonne template) usa il left edge: la label corretta è
-        # quella sotto cui INIZIA il valore.
+        # For "wide" words (wider than most labels, typically because
+        # they result from the merge of a string that spans several
+        # template columns) use the left edge: the correct label is the
+        # one below which the value STARTS.
         value_width = value[:x1] - value[:x0]
         anchor_point =
           if value_width > WIDE_VALUE_THRESHOLD
@@ -175,14 +175,14 @@ module Rpdfium
         end.max_by { |l| l[:x1] }
       end
 
-      # Identifica colonne dati e propaga l'header canonico stampato in
-      # cima alla colonna a TUTTI i valori della colonna.
-      # Usa @column_inference fornito al constructor.
+      # Identifies data columns and propagates the canonical header
+      # printed at the top of the column to ALL the values of the column.
+      # Uses the @column_inference provided to the constructor.
       def reassign_by_columns(prelim, labels, values)
         columns = @column_inference.infer(values)
         return prelim if columns.empty?
 
-        # Ordina colonne più grandi prima (più evidenza statistica)
+        # Sort larger columns first (more statistical evidence)
         sorted_columns = columns.sort_by { |c| -c.size }
 
         column_headers = {}
