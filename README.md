@@ -27,8 +27,8 @@ end
 ## Why
 
 The Ruby ecosystem has `pdf-reader` (text only, slow on complex docs),
-`origami` (security-research focused), and `hexapdf` (great for
-manipulation but text extraction is approximate). None give you
+`origami` (security-research focused), and `hexapdf` (agpl and commercially licensed).
+I had the necessity of a real open source free to use alternative that give you
 character-level bounding boxes, real vector path geometry, or table
 extraction. `rpdfium` fills that gap by binding the same battle-tested
 C++ engine that powers Chrome's PDF viewer.
