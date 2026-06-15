@@ -27,11 +27,13 @@ end
 ## Why
 
 The Ruby ecosystem has `pdf-reader` (text only, slow on complex docs),
-`origami` (security-research focused), and `hexapdf` (agpl and commercially licensed).
-I had the necessity of a real open source free to use alternative that give you
-character-level bounding boxes, real vector path geometry, or table
-extraction. `rpdfium` fills that gap by binding the same battle-tested
-C++ engine that powers Chrome's PDF viewer.
+`origami` (security-research focused), and `hexapdf` — a capable library that
+does extract text with character positioning, but is AGPL / commercially
+licensed and has no table-detection pipeline or page rasterization. I needed a
+permissively licensed alternative that adds pdfplumber-style table extraction
+and page rendering on top of character-level metadata. `rpdfium` fills that gap
+by binding the same battle-tested C++ engine that powers Chrome's PDF viewer,
+under Apache-2.0.
 
 In practice it matches the speed of Python's `pypdfium2` on text
 extraction and is **15-56× faster than `pdfplumber`** while using
@@ -470,76 +472,60 @@ the tree stays in memory until the document is closed.
 
 ## Performance
 
-Measured on 4 PDFs of increasing complexity, best-of-3 runs after a
-warm-up, isolated in subprocesses to capture clean peak RSS. Versions
-under test: `rpdfium 0.3.13`, `pdfplumber 0.11.9`, `pypdfium2 5.6.0`.
+The full, reproducible benchmark suite — sample PDFs, runners, ground-truth
+correctness scoring, and methodology — lives in
+[`benchmark/`](benchmark/README.md). It compares **rpdfium** against
+**pypdfium2** (the "pure PDFium speed floor"), **pdfplumber** (the reference
+pure-Python pipeline) and **hexapdf** (pure Ruby) across four synthetic PDFs
+of increasing complexity (1 → 60 pages), measuring **execution time**, **peak
+memory (RSS)** and **correctness** (fraction of known ground-truth data
+recovered). Run it yourself:
 
-| Test corpus | Pages | Size | What it stresses |
-| --- | ---: | ---: | --- |
-| `sample.pdf` | 1 | 18 KB | Plain text baseline |
-| `form.pdf` | 1 | 107 KB | Char-per-text-object kerning, Form XObject, tables |
-| `complex.pdf` | 85 | 60 MB | Magazine-style document, dense text + heavy graphics |
-| `report.pdf` | 226 | 322 KB | Rotated pages (90°), small fonts, ~15 tables per page |
+```bash
+export PDFIUM_LIBRARY_PATH=/path/to/libpdfium.{so,dylib,dll}
+pip install pdfplumber pypdfium2    # optional baselines
+gem install hexapdf                 # optional baseline + table-extraction reference
+ruby benchmark/run.rb
+```
 
-### Speed
+### Synthetic suite (Apple M-series, best of 3)
 
-| Corpus | Task | rpdfium | pypdfium2 | pdfplumber | speedup vs pdfplumber |
-| --- | --- | ---: | ---: | ---: | ---: |
-| sample.pdf (1 pag) | text | 4 ms | 4 ms | 75 ms | **21×** |
-| sample.pdf (1 pag) | tables | 4 ms | n/a | 70 ms | **16×** |
-| form.pdf (1 pag) | text | 12 ms | 13 ms | 538 ms | **44×** |
-| form.pdf (1 pag) | tables | 25 ms | n/a | 575 ms | **23×** |
-| complex.pdf (85 pag) | text | 190 ms | 183 ms | 7.76 s | **41×** |
-| complex.pdf (85 pag) | tables | 231 ms | n/a | 7.07 s | **31×** |
-| report.pdf (226 pag) | text | 412 ms | 397 ms | 23.26 s | **56×** |
-| report.pdf (226 pag) | tables | 1.68 s | n/a | 25.25 s | **15×** |
+Text extraction — rpdfium tracks pypdfium2 within noise (FFI overhead not
+measurable); pdfplumber degrades super-linearly:
 
-`pypdfium2` does not implement table extraction (it's a raw FFI binding
-to PDFium, not a full pipeline). It's listed as the "pure PDFium speed
-floor" for text — rpdfium matches it within ±5%, showing that the Ruby
-FFI overhead is not measurable.
-
-### Memory (peak RSS)
-
-| Corpus | rpdfium | pypdfium2 | pdfplumber | pdfplumber/rpdfium |
+| PDF | rpdfium | pypdfium2 | pdfplumber | hexapdf |
 | --- | ---: | ---: | ---: | ---: |
-| sample.pdf | 29 MB | 20 MB | 40 MB | 1.4× |
-| form.pdf | 32 MB | 22 MB | 45 MB | 1.4× |
-| complex.pdf | 106 MB | 69 MB | 535 MB | **5.0×** |
-| report.pdf | 136 MB | 41 MB | 1003 MB | **7.4×** |
+| 01_simple (1 pg) | 12 ms / 33 MB | 11 ms / 36 MB | 16 ms / 41 MB | 12 ms / 23 MB |
+| 02_medium (6 pg) | 14 ms / 34 MB | 13 ms / 36 MB | 97 ms / 57 MB | 18 ms / 24 MB |
+| 03_complex (16 pg) | 15 ms / 36 MB | 16 ms / 37 MB | 184 ms / 72 MB | 25 ms / 25 MB |
+| 04_heavy (60 pg) | 49 ms / 59 MB | 49 ms / 39 MB | **2.37 s / 455 MB** | 147 ms / 27 MB |
 
-The memory gap widens with workload size. On a 226-page document
-pdfplumber uses ~1 GB; rpdfium stays under 140 MB. For server-side
-batch processing this is the difference between a 256 MB container and
-a 2 GB one.
+Table extraction (pypdfium2 has no table layer; the hexapdf column uses the
+minimal lines-based reference in
+[`benchmark/examples/hexapdf_table_extraction.rb`](benchmark/examples/hexapdf_table_extraction.rb)):
 
-### Headline numbers
+| PDF | rpdfium | pdfplumber | hexapdf |
+| --- | ---: | ---: | ---: |
+| 01_simple (1 pg) | 15 ms / 34 MB | 17 ms / 41 MB | 22 ms / 25 MB |
+| 02_medium (6 pg) | 45 ms / 43 MB | 111 ms / 56 MB | 53 ms / 25 MB |
+| 03_complex (16 pg) | 151 ms / 54 MB | 185 ms / 71 MB | 85 ms / 25 MB |
+| 04_heavy (60 pg) | 791 ms / 265 MB | **2.96 s / 442 MB** | 752 ms / 28 MB |
 
-On large PDFs (226 pages, dense layout):
+Correctness is **100% for every library on every tier** — these are clean
+generated grids, the easy case. Real-world tables (dashed rules, partial
+borders, misaligned cells) are where rpdfium's snap/join tolerances and
+`:text` fallback earn their cost; the 120-line hexapdf reference matches here
+but would drop cells there. See
+[`benchmark/README.md`](benchmark/README.md) for the full tables, task-support
+matrix, correctness scoring and methodology.
 
-- **rpdfium completes both text + tables in ~2.1 s using 136 MB**
-- **pdfplumber needs ~48 s and 1 GB** for the same work
+### Real-world corpus
 
-Across the four corpora the median speedup vs pdfplumber is **27× on
-text**, **22× on tables**. rpdfium scales linearly with page count
-(thanks to PDFium's C++ engine); pdfplumber's pure-Python pipeline
-degrades super-linearly on large documents.
-
-### Methodology
-
-Each measurement is the **minimum of 3 timed runs after a warm-up run**
-(to neutralize OS page cache effects on the 60 MB `complex.pdf`).
-Subprocess isolation per measurement ensures clean RSS reading via
-`resource.getrusage` / `/proc/self/status`. The benchmark harness is
-a small Ruby driver that shells out to three runners (one Ruby script
-using `rpdfium`, two Python scripts using `pdfplumber` and
-`pypdfium2`), parses the JSON each emits, and aggregates the results.
-
-Output quality has been spot-checked: rpdfium matches pypdfium2 char
-count within ±1 char (rounding on the trailing newline). pdfplumber
-returns ~2% fewer chars on locale-formatted numbers due to a different
-word-tokenization for thousand-separator punctuation (e.g. `1.250.000`
-split on periods).
+On larger, non-redistributable documents (`rpdfium 0.3.13`, `pdfplumber
+0.11.9`, `pypdfium2 5.6.0`), the gap is wider: across a 1→226-page corpus the
+median speedup vs pdfplumber is **27× on text** and **22× on tables**, with
+peak RSS staying under 140 MB where pdfplumber reaches ~1 GB on 226 pages —
+the difference between a 256 MB container and a 2 GB one.
 
 ## Memory safety
 

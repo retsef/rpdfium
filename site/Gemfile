@@ -1,0 +1,14 @@
+# frozen_string_literal: true
+
+# Dependencies for the rpdfium documentation site only.
+# This is independent from the gem's root Gemfile.
+
+source "https://rubygems.org"
+
+gem "jekyll", "~> 4.3"
+gem "just-the-docs", "~> 0.10"
+
+# Plugins used during the build.
+group :jekyll_plugins do
+  gem "jekyll-seo-tag", "~> 2.8"
+end

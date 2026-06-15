@@ -1,0 +1,25 @@
+// rpdfium color scheme — red-dominant variant of the default light scheme.
+// Loaded via `color_scheme: rpdfium` in _config.yml; every variable not set
+// here keeps its just-the-docs light default.
+
+// Primary accent: links, buttons, active nav.
+$link-color: #b91c1c;
+$btn-primary-color: #b91c1c;
+
+// Headings in a deep red instead of near-black.
+$body-heading-color: #7f1d1d;
+
+// Chrome: sidebar, search, borders on warm red-tinted neutrals.
+$sidebar-color: #fef2f2;
+$search-background-color: #fffbfb;
+$feedback-color: #f8e3e3; // selected nav item background
+$border-color: #f3dcdc;
+$base-button-color: #fdf4f4;
+
+// Secondary text in the nav and search previews.
+$nav-child-link-color: #8a4b4b;
+$search-result-preview-color: #8a5151;
+
+// Content surfaces.
+$table-background-color: #fffafa;
+$code-background-color: #faf4f4;

@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 > Entries for versions prior to 0.3.10 are available in the project's
 > Git history.
 
+## [Unreleased]
+
+### Fixed
+
+- **`Annotation#link_uri` returned garbled text**: `FPDFAction_GetURIPath`
+  returns 7-bit ASCII bytes, unlike most PDFium getters which return
+  UTF-16LE. The bytes were being decoded as UTF-16, producing CJK garbage
+  for every external link URI. Added `Raw.read_ascii_string` and switched
+  `link_uri` to it.
+
 ## [0.4.1] - 2026-05-26
 
 ### Fixed
