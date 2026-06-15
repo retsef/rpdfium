@@ -43,18 +43,19 @@ end
 Output:
 
 ```
+Helvetica        h=6.5 | 142 chars | CODICE FISCALEDENOMINAZIONEDOM
 Courier          h=7.9 | 142 chars | RSSMRA80A01H501ZAzienda S.R.L.
-Helvetica        h=6.5 | 137 chars | CDICE FISCALEDENMINAZINEDMICIL
-Helvetica-Bold   h=9.3 |  35 chars | RIERVAT ALL'UFFII campi compil
+Helvetica-Bold   h=9.3 |  41 chars | RISERVATO ALL'UFFICIO (campi c
 ```
 
-The data layer is clearly Courier.
+The data layer is the monospace **Courier**; the template is Helvetica.
 
 {: .note }
-> `font_inventory` groups by `(font, height, weight)` using **tight** char
-> boxes, so round glyphs (O, S) that overshoot slightly land in the adjacent
-> height group — that's why they're missing from the Helvetica samples above.
-> It's an inventory for orientation, not an extraction tool.
+> `font_inventory` groups by `(font, height, weight)`, clustering near-equal
+> heights so a round glyph whose loose box overshoots the cap line by a
+> fraction of a point (`O`, `S`, `C`) stays with the rest of its size instead
+> of splitting off. The `sample` concatenates the group's chars with no word
+> spacing — it's an inventory for orientation, not an extraction tool.
 
 ## Step 2 — extract the data, line by line
 

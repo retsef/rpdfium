@@ -4,7 +4,7 @@ require "spec_helper"
 
 # Stub di Page sufficiente per testare Extractor senza PDFium nativo.
 class FakePage
-  attr_reader :width, :height, :chars, :horizontal_lines, :vertical_lines
+  attr_reader :width, :height, :horizontal_lines, :vertical_lines
 
   def initialize(chars: [], horizontal_lines: [], vertical_lines: [],
                  width: 595.0, height: 842.0)
@@ -13,6 +13,13 @@ class FakePage
     @vertical_lines = vertical_lines
     @width = width
     @height = height
+  end
+
+  # Mirrors Page#chars' signature so the Extractor/Table pipeline can call
+  # it with lean:/geometry: keywords. The stub ignores them and returns the
+  # canned chars.
+  def chars(loose: true, inject_spaces: true, lean: false, geometry: false)
+    @chars
   end
 end
 

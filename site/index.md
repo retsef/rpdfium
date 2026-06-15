@@ -47,8 +47,9 @@ page rendering, and binds the same battle-tested C++ engine that powers
 Chrome's PDF viewer — so it stays fast and light on large, complex documents.
 
 In practice it matches the speed of Python's `pypdfium2` on text extraction
-and is **15–56× faster than `pdfplumber`** while using **5–7× less memory** on
-large documents. See [Benchmarks](benchmarks) for the reproducible suite.
+and is **up to ~49× faster than `pdfplumber`** while using **up to ~8× less
+memory** on dense documents. See [Benchmarks](benchmarks) for the reproducible
+suite.
 
 ## At a glance
 

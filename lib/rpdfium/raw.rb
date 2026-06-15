@@ -972,6 +972,19 @@ module Rpdfium
       utf16_bytes_to_utf8(buf.read_bytes(n_bytes))
     end
 
+    # Same two-call convention, but for the few APIs that return 7-bit
+    # ASCII bytes instead of UTF-16LE (e.g. FPDFAction_GetURIPath).
+    def self.read_ascii_string(method_name, *args)
+      args_probe = args + [FFI::Pointer::NULL, 0]
+      n_bytes = send(method_name, *args_probe)
+      return "" if n_bytes <= 1 # only the null terminator or an error
+
+      buf = FFI::MemoryPointer.new(:uchar, n_bytes)
+      args_real = args + [buf, n_bytes]
+      send(method_name, *args_real)
+      buf.read_bytes(n_bytes).delete("\x00").force_encoding("UTF-8")
+    end
+
     # PDFium returns little-endian UTF-16LE with a null terminator.
     def self.utf16_bytes_to_utf8(bytes)
       bytes.force_encoding("UTF-16LE")

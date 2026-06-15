@@ -14,28 +14,28 @@ nav_order: 1
 
 Extracts the plain text of every page and scores the fraction of embedded
 sentinel tokens recovered (correctness). Apple M-series (arm64, macOS), best
-of 3 runs after a warm-up. Reproduce with `ruby benchmark/run.rb`.
+of 5 runs after a warm-up. Reproduce with `ruby benchmark/run.rb`.
 
 ## Synthetic suite
 
 | PDF | Library | Time | Peak RSS | Correctness |
 | --- | --- | ---: | ---: | ---: |
-| `01_simple.pdf` (1 pg) | rpdfium | 12 ms | 33 MB | 100% |
-| | pypdfium2 | 11 ms | 36 MB | 100% |
-| | pdfplumber | 16 ms | 41 MB | 100% |
-| | hexapdf | 12 ms | 23 MB | 100% |
-| `02_medium.pdf` (6 pg) | rpdfium | 14 ms | 34 MB | 100% |
-| | pypdfium2 | 13 ms | 36 MB | 100% |
-| | pdfplumber | 97 ms | 57 MB | 100% |
+| `01_simple.pdf` (1 pg) | rpdfium | 11 ms | 33 MB | 100% |
+| | pypdfium2 | 12 ms | 36 MB | 100% |
+| | pdfplumber | 16 ms | 42 MB | 100% |
+| | hexapdf | 12 ms | 24 MB | 100% |
+| `02_medium.pdf` (6 pg) | rpdfium | 13 ms | 34 MB | 100% |
+| | pypdfium2 | 13 ms | 37 MB | 100% |
+| | pdfplumber | 99 ms | 57 MB | 100% |
 | | hexapdf | 18 ms | 24 MB | 100% |
-| `03_complex.pdf` (16 pg) | rpdfium | 15 ms | 36 MB | 100% |
+| `03_complex.pdf` (16 pg) | rpdfium | 16 ms | 36 MB | 100% |
 | | pypdfium2 | 16 ms | 37 MB | 100% |
-| | pdfplumber | 184 ms | 72 MB | 100% |
-| | hexapdf | 25 ms | 25 MB | 100% |
-| `04_heavy.pdf` (60 pg) | rpdfium | **49 ms** | 59 MB | 100% |
+| | pdfplumber | 181 ms | 72 MB | 100% |
+| | hexapdf | 26 ms | 24 MB | 100% |
+| `04_heavy.pdf` (60 pg) | rpdfium | **48 ms** | 59 MB | 100% |
 | | pypdfium2 | 49 ms | 39 MB | 100% |
 | | pdfplumber | **2.37 s** | **455 MB** | 100% |
-| | hexapdf | 147 ms | 27 MB | 100% |
+| | hexapdf | 154 ms | 27 MB | 100% |
 
 Observations:
 
@@ -62,28 +62,3 @@ Observations:
 - Correctness is 100% across the board: every library recovers all sentinel
   tokens on these clean, generated PDFs. Real-world PDFs (broken ToUnicode
   maps, subset fonts, rotated text) are where extraction quality diverges.
-
-## Real-world corpus
-
-Larger, denser documents (not redistributable). Versions: `rpdfium 0.3.13`,
-`pdfplumber 0.11.9`, `pypdfium2 5.6.0` (hexapdf not measured on this corpus).
-
-| Corpus | rpdfium | pypdfium2 | pdfplumber | speedup vs pdfplumber |
-| --- | ---: | ---: | ---: | ---: |
-| sample.pdf (1 pg, 18 KB) | 4 ms | 4 ms | 75 ms | **21×** |
-| form.pdf (1 pg, 107 KB) | 12 ms | 13 ms | 538 ms | **44×** |
-| complex.pdf (85 pg, 60 MB) | 190 ms | 183 ms | 7.76 s | **41×** |
-| report.pdf (226 pg, 322 KB) | 412 ms | 397 ms | 23.26 s | **56×** |
-
-Peak RSS on the same corpus:
-
-| Corpus | rpdfium | pypdfium2 | pdfplumber | pdfplumber / rpdfium |
-| --- | ---: | ---: | ---: | ---: |
-| sample.pdf | 29 MB | 20 MB | 40 MB | 1.4× |
-| form.pdf | 32 MB | 22 MB | 45 MB | 1.4× |
-| complex.pdf | 106 MB | 69 MB | 535 MB | **5.0×** |
-| report.pdf | 136 MB | 41 MB | 1003 MB | **7.4×** |
-
-On a 226-page document pdfplumber uses ~1 GB; rpdfium stays under 140 MB. For
-server-side batch processing this is the difference between a 256 MB container
-and a 2 GB one.

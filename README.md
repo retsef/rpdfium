@@ -36,8 +36,8 @@ by binding the same battle-tested C++ engine that powers Chrome's PDF viewer,
 under Apache-2.0.
 
 In practice it matches the speed of Python's `pypdfium2` on text
-extraction and is **15-56× faster than `pdfplumber`** while using
-**5-7× less memory** on large documents. See [Performance](#performance)
+extraction and is **up to ~49× faster than `pdfplumber`** while using
+**up to ~8× less memory** on dense documents. See [Performance](#performance)
 for details.
 
 ## Installing PDFium
@@ -323,7 +323,7 @@ end
 Three primitives:
 
 - `Page#font_inventory` — distribution by `(font, height, weight)`,
-  with counts and samples for ispection
+  with counts and samples for inspection
 - `Page#chars_where(font:, height:, weight:, bbox:, where:)` —
   filter chars by any combination of criteria
 - `Page#lines(font:, ...)` — high-level helper: filter + word
@@ -488,17 +488,17 @@ gem install hexapdf                 # optional baseline + table-extraction refer
 ruby benchmark/run.rb
 ```
 
-### Synthetic suite (Apple M-series, best of 3)
+### Synthetic suite (Apple M-series, best of 5)
 
 Text extraction — rpdfium tracks pypdfium2 within noise (FFI overhead not
 measurable); pdfplumber degrades super-linearly:
 
 | PDF | rpdfium | pypdfium2 | pdfplumber | hexapdf |
 | --- | ---: | ---: | ---: | ---: |
-| 01_simple (1 pg) | 12 ms / 33 MB | 11 ms / 36 MB | 16 ms / 41 MB | 12 ms / 23 MB |
-| 02_medium (6 pg) | 14 ms / 34 MB | 13 ms / 36 MB | 97 ms / 57 MB | 18 ms / 24 MB |
-| 03_complex (16 pg) | 15 ms / 36 MB | 16 ms / 37 MB | 184 ms / 72 MB | 25 ms / 25 MB |
-| 04_heavy (60 pg) | 49 ms / 59 MB | 49 ms / 39 MB | **2.37 s / 455 MB** | 147 ms / 27 MB |
+| 01_simple (1 pg) | 11 ms / 33 MB | 12 ms / 36 MB | 16 ms / 42 MB | 12 ms / 24 MB |
+| 02_medium (6 pg) | 13 ms / 34 MB | 13 ms / 37 MB | 99 ms / 57 MB | 18 ms / 24 MB |
+| 03_complex (16 pg) | 16 ms / 36 MB | 16 ms / 37 MB | 181 ms / 72 MB | 26 ms / 24 MB |
+| 04_heavy (60 pg) | 48 ms / 59 MB | 49 ms / 39 MB | **2.37 s / 455 MB** | 154 ms / 27 MB |
 
 Table extraction (pypdfium2 has no table layer; the hexapdf column uses the
 minimal lines-based reference in
@@ -506,10 +506,10 @@ minimal lines-based reference in
 
 | PDF | rpdfium | pdfplumber | hexapdf |
 | --- | ---: | ---: | ---: |
-| 01_simple (1 pg) | 15 ms / 34 MB | 17 ms / 41 MB | 22 ms / 25 MB |
-| 02_medium (6 pg) | 45 ms / 43 MB | 111 ms / 56 MB | 53 ms / 25 MB |
-| 03_complex (16 pg) | 151 ms / 54 MB | 185 ms / 71 MB | 85 ms / 25 MB |
-| 04_heavy (60 pg) | 791 ms / 265 MB | **2.96 s / 442 MB** | 752 ms / 28 MB |
+| 01_simple (1 pg) | 14 ms / 33 MB | 17 ms / 42 MB | 23 ms / 25 MB |
+| 02_medium (6 pg) | 38 ms / 37 MB | 111 ms / 57 MB | 53 ms / 25 MB |
+| 03_complex (16 pg) | 127 ms / 43 MB | 185 ms / 71 MB | 83 ms / 25 MB |
+| 04_heavy (60 pg) | 537 ms / 119 MB | **2.98 s / 442 MB** | 759 ms / 29 MB |
 
 Correctness is **100% for every library on every tier** — these are clean
 generated grids, the easy case. Real-world tables (dashed rules, partial
@@ -518,14 +518,6 @@ borders, misaligned cells) are where rpdfium's snap/join tolerances and
 but would drop cells there. See
 [`benchmark/README.md`](benchmark/README.md) for the full tables, task-support
 matrix, correctness scoring and methodology.
-
-### Real-world corpus
-
-On larger, non-redistributable documents (`rpdfium 0.3.13`, `pdfplumber
-0.11.9`, `pypdfium2 5.6.0`), the gap is wider: across a 1→226-page corpus the
-median speedup vs pdfplumber is **27× on text** and **22× on tables**, with
-peak RSS staying under 140 MB where pdfplumber reaches ~1 GB on 226 pages —
-the difference between a 256 MB container and a 2 GB one.
 
 ## Memory safety
 

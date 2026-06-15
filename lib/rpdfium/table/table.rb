@@ -77,11 +77,13 @@ module Rpdfium
                   y_tolerance: Util::WordExtractor::DEFAULT_Y_TOLERANCE,
                   keep_blank_chars: false,
                   cell_padding: 0.0)
-        # `lean: true`: skips 5 FFI calls per char (font name, weight,
-        # angle, hyphen flag, unicode error) that are not needed by the
-        # table-extraction pipeline. On tables with thousands of chars it
-        # reduces compute_chars time by ~30%.
-        chars = @page.chars(lean: true)
+        # `geometry: true`: the strongest lean mode — on top of skipping
+        # font/weight/angle/hyphen/unicode-error it also drops the per-char
+        # origin read and emits a minimal hash. It keeps only the fields the
+        # table/word pipeline reads, cutting both FFI roundtrips and hash
+        # allocation. On tables with thousands of chars this is the dominant
+        # cost of extract_tables. See Page#chars.
+        chars = @page.chars(lean: true, geometry: true)
 
         # Sort by vertical midpoint once; build a parallel array of vmid
         # for bsearch. Cost: O(n log n) one-time.

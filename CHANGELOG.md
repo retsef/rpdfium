@@ -8,8 +8,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Performance
+
+- **`Rpdfium.extract_tables` is ~30–35% faster on text-heavy pages.** The
+  table/word pipeline now pulls chars via a new `Page#chars(geometry: true)`
+  fast path. On top of the existing `lean` mode it also skips the per-char
+  `FPDFText_GetCharOrigin` read and the per-char angle/font/weight/render-mode
+  work, applies the page rotation inline (no intermediate tuple), and emits a
+  minimal per-char hash with only the fields the pipeline reads. The
+  content-stream "token end" signal (`text_obj_ends_with_space`, used by
+  `rebuild_word_separators` to avoid splitting numbers like `2.895,26`) is
+  preserved, so extracted table contents are byte-for-byte identical. Measured
+  on the synthetic benchmark corpus: heavy page set 731 → 484 ms, complex
+  131 → 110 ms.
+
 ### Fixed
 
+- **`Page#font_inventory` split round glyphs into spurious groups**: heights
+  were keyed by `round(1)`, so a glyph whose loose box overshoots the cap line
+  by ~0.1pt (`O`, `S`, `C`) fell into a separate height bucket from the rest of
+  its line — producing garbled samples like `CDICE FISCALE` with every `O`
+  missing, and inflating the group count. Heights are now clustered within a
+  `height_tolerance` (default 0.5pt, single-linkage, per font+weight) and
+  samples are emitted in document order.
 - **`Annotation#link_uri` returned garbled text**: `FPDFAction_GetURIPath`
   returns 7-bit ASCII bytes, unlike most PDFium getters which return
   UTF-16LE. The bytes were being decoded as UTF-16, producing CJK garbage

@@ -85,7 +85,9 @@ module Rpdfium
       action = Raw.FPDFLink_GetAction(link_handle)
       return nil if action.null?
 
-      Raw.read_utf16_string(:FPDFAction_GetURIPath, @page.document.handle, action)
+      # Unlike most PDFium getters, FPDFAction_GetURIPath returns 7-bit
+      # ASCII bytes, not UTF-16LE.
+      Raw.read_ascii_string(:FPDFAction_GetURIPath, @page.document.handle, action)
     end
 
     # For internal links → destination page index, or nil.

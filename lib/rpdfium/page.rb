@@ -160,16 +160,28 @@ module Rpdfium
     # baseline. With `loose: false` you get the "tight" bbox of the single
     # glyph, useful for fine layout measurements but wrong for the table
     # cell filter.
-    def chars(loose: true, inject_spaces: true, lean: false)
+    # `geometry: true` is a stronger form of `lean` reserved for the
+    # table/word pipeline: on top of `lean` it ALSO skips the per-char
+    # origin (FPDFText_GetCharOrigin) and the text-object lookup
+    # (FPDFText_GetTextObject + GetFont/GetFontSize/GetTextRenderMode/
+    # GetText), and emits a 6-key hash (char, x0, x1, top, bottom,
+    # generated) instead of the full one. Those are exactly the fields the
+    # WordExtractor / Table pipeline reads; cutting the rest removes ~3 FFI
+    # roundtrips per char and a large amount of hash allocation, which on a
+    # page with thousands of chars is the dominant cost of extract_tables.
+    # Unlike `lean` (which keeps the full hash shape, just with nil/false
+    # metadata), `geometry` changes the hash shape, so it is NOT a drop-in
+    # for general char consumers — only for the geometry-only pipeline.
+    def chars(loose: true, inject_spaces: true, lean: false, geometry: false)
       # Cache: chars() is called once by Table#extract and then again by
       # WordExtractor (going through Extractor#page_words if
       # vertical/horizontal_strategy is :text). Each call costs O(n) FFI
       # roundtrips per char — expensive on pages with thousands of chars.
-      cache_key = [loose, inject_spaces, lean]
+      cache_key = [loose, inject_spaces, lean, geometry]
       @chars_cache ||= {}
       return @chars_cache[cache_key] if @chars_cache.key?(cache_key)
 
-      raw = compute_chars(loose: loose, lean: lean)
+      raw = geometry ? compute_geometry_chars(loose: loose) : compute_chars(loose: loose, lean: lean)
       result = inject_spaces ? rebuild_word_separators(raw) : raw
       @chars_cache[cache_key] = result
     end
@@ -269,11 +281,10 @@ module Rpdfium
     def best_reference_width(a, b)
       a_adv = a[:advance]
       b_adv = b[:advance]
-      if a_adv && b_adv
-        [a_adv, b_adv].max
-      else
-        [(a[:x1] - a[:x0]), (b[:x1] - b[:x0])].max
-      end
+
+      return [a_adv, b_adv].max if a_adv && b_adv
+
+      [(a[:x1] - a[:x0]), (b[:x1] - b[:x0])].max
     end
 
     def build_synthetic_space(prev, c)
@@ -419,6 +430,81 @@ module Rpdfium
               text_obj_ends_with_space: ends_with_space
             }
           end
+      end
+      result
+    end
+
+    # Minimal char extraction for the table/word pipeline. See `chars`
+    # `geometry:` for the rationale. Compared to compute_chars(lean: true)
+    # this skips, per char: FPDFText_GetCharOrigin (origin is never read by
+    # the pipeline) and the per-char angle/font/weight/render-mode reads,
+    # the page rotation is applied inline (no origin, no intermediate
+    # 6-tuple allocation), and the result hash carries only the fields the
+    # WordExtractor / Table / rebuild_word_separators path reads.
+    #
+    # `text_obj_ends_with_space` is intentionally KEPT: rebuild_word_separators
+    # uses it as the content-stream "token end" signal that distinguishes a
+    # word boundary from internal numeric kerning (e.g. "2.895,26"). Dropping
+    # it would change word splitting on PDFs that rely on that signal, so the
+    # GetTextObject lookup stays (its info tuple is cached per text object).
+    def compute_geometry_chars(loose:)
+      tp = text_page
+      n = tp.char_count
+      return [] if n.zero?
+
+      page_rotation = rotation
+      raw_w, raw_h = case page_rotation
+                     when 90, 270 then [height, width]
+                     else [width, height]
+                     end
+
+      result = Array.new(n)
+
+      # FFI buffers reused across all iterations (see compute_chars).
+      l = FFI::MemoryPointer.new(:double)
+      r = FFI::MemoryPointer.new(:double)
+      b = FFI::MemoryPointer.new(:double)
+      t = FFI::MemoryPointer.new(:double)
+      rect = Raw::FS_RECTF.new
+      fs_buf = FFI::MemoryPointer.new(:float)
+      text_obj_text_buf = FFI::MemoryPointer.new(:uint8, TEXT_OBJ_INITIAL_BUF_BYTES)
+      text_obj_cache = {}
+      tp_handle = tp.handle
+
+      n.times do |i|
+        x0, x1, y_top, y_bot = read_char_bbox(tp, i, loose, l, r, b, t, rect)
+
+        text_obj = begin
+          Raw.FPDFText_GetTextObject(tp_handle, i)
+        rescue Rpdfium::LoadError
+          nil
+        end
+        _, _, _, ends_with_space =
+          fetch_text_obj_info(text_obj, tp, text_obj_cache,
+                              fs_buf: fs_buf, text_buf: text_obj_text_buf)
+
+        # Inline page-rotation → top-down coords (mirror of
+        # apply_page_rotation_to_char, dropping the origin outputs).
+        case page_rotation
+        when 90
+          td_x0, td_x1, td_top, td_bottom = y_bot, y_top, x0, x1
+        when 180
+          td_x0, td_x1, td_top, td_bottom = raw_w - x1, raw_w - x0, y_bot, y_top
+        when 270
+          td_x0, td_x1, td_top, td_bottom = raw_h - y_top, raw_h - y_bot, raw_w - x1, raw_w - x0
+        else # 0, nil, or non-multiple-of-90 fallback
+          td_x0, td_x1, td_top, td_bottom = x0, x1, raw_h - y_top, raw_h - y_bot
+        end
+
+        result[i] = {
+          char:      safe_codepoint(Raw.FPDFText_GetUnicode(tp_handle, i)),
+          x0:        td_x0,
+          x1:        td_x1,
+          top:       td_top,
+          bottom:    td_bottom,
+          generated: Raw.FPDFText_IsGenerated(tp_handle, i) == 1,
+          text_obj_ends_with_space: ends_with_space
+        }
       end
       result
     end
@@ -692,24 +778,41 @@ module Rpdfium
     # real size is in the CTM matrix (a common case on forms generated with
     # scaling).
     #
-    # `sample` is the first 40 chars of that group, for inspection.
+    # `sample` is the first 40 chars of that group, in document order, for
+    # inspection.
+    #
+    # Heights are bucketed within `height_tolerance` (single-linkage, per
+    # font+weight) rather than rounded to a fixed precision. A round glyph
+    # whose loose box overshoots the cap line by a fraction of a point
+    # ("O", "S", "C"...) would otherwise land in a spurious one-glyph group
+    # (e.g. "O" at h=6.6 split off from the rest of the line at h=6.5,
+    # producing garbled samples like "CDICE FISCALE" with every "O"
+    # missing). Clustering keeps each logical size in a single group.
     #
     # Use it to choose the `chars_where` filter: typically the font with the
     # most chars is the template, and the minority fonts (a single size,
     # often monospace) are the data.
-    def font_inventory
-      groups = chars.reject { |c| c[:generated] }.group_by do |c|
-        h = (c[:bottom] - c[:top]).round(1)
-        [c[:font], h, c[:weight]]
-      end
-      groups.map do |(font, height, weight), cs|
-        {
-          font: font,
-          height: height,
-          weight: weight,
-          count: cs.size,
-          sample: cs.first(40).map { |c| c[:char] }.join
-        }
+    def font_inventory(height_tolerance: 0.5)
+      real = chars.reject { |c| c[:generated] }
+      # Tag with document position so the cluster (which gets reordered by
+      # height) can be put back in reading order for the sample.
+      indexed = real.each_with_index.to_a
+
+      by_font_weight = indexed.group_by { |(c, _i)| [c[:font], c[:weight]] }
+
+      by_font_weight.flat_map do |(font, weight), pairs|
+        height_of = ->(p) { p[0][:bottom] - p[0][:top] }
+        Util::Cluster.cluster_objects(pairs, height_of, tolerance: height_tolerance).map do |cluster|
+          mean_h = cluster.sum { |p| height_of.call(p) } / cluster.size.to_f
+          ordered = cluster.sort_by { |(_c, i)| i }
+          {
+            font: font,
+            height: mean_h.round(1),
+            weight: weight,
+            count: cluster.size,
+            sample: ordered.first(40).map { |(c, _i)| c[:char] }.join
+          }
+        end
       end.sort_by { |g| -g[:count] }
     end
 
