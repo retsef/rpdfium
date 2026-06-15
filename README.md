@@ -28,16 +28,20 @@ end
 
 The Ruby ecosystem has `pdf-reader` (text only, slow on complex docs),
 `origami` (security-research focused), and `hexapdf` — a capable library that
-does extract text with character positioning, but is AGPL / commercially
-licensed and has no table-detection pipeline or page rasterization. I needed a
-permissively licensed alternative that adds pdfplumber-style table extraction
-and page rendering on top of character-level metadata. `rpdfium` fills that gap
-by binding the same battle-tested C++ engine that powers Chrome's PDF viewer,
-under Apache-2.0.
+extracts text with character-level positioning and exposes the vector-path
+primitives you need to build table extraction yourself (see the ~120-line
+[reference](benchmark/examples/hexapdf_table_extraction.rb) in the benchmark
+suite). `hexapdf` is AGPL / commercially licensed, though.
+
+I wanted a permissively licensed library that ships those higher-level
+pipelines **out of the box** — pdfplumber-style table detection, page
+rendering to raster — on top of character metadata, without hand-rolling them.
+`rpdfium` does that under Apache-2.0, binding the same battle-tested C++ engine
+that powers Chrome's PDF viewer.
 
 In practice it matches the speed of Python's `pypdfium2` on text
-extraction and is **up to ~49× faster than `pdfplumber`** while using
-**up to ~8× less memory** on dense documents. See [Performance](#performance)
+extraction and is **up to ~52× faster than `pdfplumber`** while using
+**up to ~13× less memory** on dense documents. See [Performance](#performance)
 for details.
 
 ## Installing PDFium
@@ -495,10 +499,10 @@ measurable); pdfplumber degrades super-linearly:
 
 | PDF | rpdfium | pypdfium2 | pdfplumber | hexapdf |
 | --- | ---: | ---: | ---: | ---: |
-| 01_simple (1 pg) | 11 ms / 33 MB | 12 ms / 36 MB | 16 ms / 42 MB | 12 ms / 24 MB |
-| 02_medium (6 pg) | 13 ms / 34 MB | 13 ms / 37 MB | 99 ms / 57 MB | 18 ms / 24 MB |
-| 03_complex (16 pg) | 16 ms / 36 MB | 16 ms / 37 MB | 181 ms / 72 MB | 26 ms / 24 MB |
-| 04_heavy (60 pg) | 48 ms / 59 MB | 49 ms / 39 MB | **2.37 s / 455 MB** | 154 ms / 27 MB |
+| 01_simple (1 pg) | 12 ms / 33 MB | 12 ms / 36 MB | 17 ms / 42 MB | 12 ms / 24 MB |
+| 02_medium (6 pg) | 13 ms / 33 MB | 14 ms / 36 MB | 99 ms / 57 MB | 19 ms / 24 MB |
+| 03_complex (16 pg) | 15 ms / 34 MB | 16 ms / 37 MB | 188 ms / 72 MB | 26 ms / 25 MB |
+| 04_heavy (60 pg) | **47 ms / 35 MB** | 50 ms / 40 MB | **2.43 s / 456 MB** | 144 ms / 27 MB |
 
 Table extraction (pypdfium2 has no table layer; the hexapdf column uses the
 minimal lines-based reference in
@@ -506,10 +510,10 @@ minimal lines-based reference in
 
 | PDF | rpdfium | pdfplumber | hexapdf |
 | --- | ---: | ---: | ---: |
-| 01_simple (1 pg) | 14 ms / 33 MB | 17 ms / 42 MB | 23 ms / 25 MB |
-| 02_medium (6 pg) | 38 ms / 37 MB | 111 ms / 57 MB | 53 ms / 25 MB |
-| 03_complex (16 pg) | 127 ms / 43 MB | 185 ms / 71 MB | 83 ms / 25 MB |
-| 04_heavy (60 pg) | 537 ms / 119 MB | **2.98 s / 442 MB** | 759 ms / 29 MB |
+| 01_simple (1 pg) | 15 ms / 33 MB | 18 ms / 42 MB | 23 ms / 25 MB |
+| 02_medium (6 pg) | 40 ms / 35 MB | 111 ms / 57 MB | 55 ms / 26 MB |
+| 03_complex (16 pg) | 125 ms / 38 MB | 188 ms / 71 MB | 87 ms / 26 MB |
+| 04_heavy (60 pg) | **493 ms / 39 MB** | **2.90 s / 442 MB** | 727 ms / 28 MB |
 
 Correctness is **100% for every library on every tier** — these are clean
 generated grids, the easy case. Real-world tables (dashed rules, partial

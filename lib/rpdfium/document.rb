@@ -100,6 +100,31 @@ module Rpdfium
       page_count.times { |i| yield page(i) }
     end
 
+    # Iterates the pages WITHOUT retaining them in the page cache: each page
+    # is closed (native FPDF_PAGE / text page handles and the per-page char
+    # and line-segment caches) as soon as the block returns.
+    #
+    # `#each` caches every visited page for the document's whole lifetime —
+    # ideal for interactive, random-access use, but for a single linear pass
+    # over a large document it makes peak memory grow with the page count
+    # (each page keeps thousands of char hashes alive). The batch helpers
+    # (`Rpdfium.extract_text`, `.extract_tables`, `.render_to_pngs`) visit
+    # each page exactly once, so they stream instead: only one page is alive
+    # at a time and peak RSS stays flat in the number of pages.
+    def each_page_streaming
+      return enum_for(:each_page_streaming) unless block_given?
+
+      ensure_open!
+      page_count.times do |i|
+        pg = Page.new(self, i)
+        begin
+          yield pg
+        ensure
+          pg.close
+        end
+      end
+    end
+
     def page_label(index)
       Raw.read_utf16_string(:FPDF_GetPageLabel, @state[:handle], index)
     end

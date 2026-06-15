@@ -32,18 +32,18 @@ with `ruby benchmark/run.rb`.
 
 | PDF | Library | Time | Peak RSS | Correctness |
 | --- | --- | ---: | ---: | ---: |
-| `01_simple.pdf` (1 pg, 1 table) | rpdfium | **14 ms** | 33 MB | 100% |
-| | pdfplumber | 17 ms | 42 MB | 100% |
+| `01_simple.pdf` (1 pg, 1 table) | rpdfium | **15 ms** | 33 MB | 100% |
+| | pdfplumber | 18 ms | 42 MB | 100% |
 | | hexapdf | 23 ms | 25 MB | 100% |
-| `02_medium.pdf` (6 pg, 6 tables) | rpdfium | **38 ms** | 37 MB | 100% |
+| `02_medium.pdf` (6 pg, 6 tables) | rpdfium | **40 ms** | 35 MB | 100% |
 | | pdfplumber | 111 ms | 57 MB | 100% |
-| | hexapdf | 53 ms | 25 MB | 100% |
-| `03_complex.pdf` (16 pg, mixed) | rpdfium | 127 ms | 43 MB | 100% |
-| | pdfplumber | 185 ms | 71 MB | 100% |
-| | hexapdf | **83 ms** | 25 MB | 100% |
-| `04_heavy.pdf` (60 pg, 60 tables) | rpdfium | **537 ms** | 119 MB | 100% |
-| | pdfplumber | **2.98 s** | 442 MB | 100% |
-| | hexapdf | 759 ms | **29 MB** | 100% |
+| | hexapdf | 55 ms | 26 MB | 100% |
+| `03_complex.pdf` (16 pg, mixed) | rpdfium | 125 ms | 38 MB | 100% |
+| | pdfplumber | 188 ms | 71 MB | 100% |
+| | hexapdf | **87 ms** | 26 MB | 100% |
+| `04_heavy.pdf` (60 pg, 60 tables) | rpdfium | **493 ms** | 39 MB | 100% |
+| | pdfplumber | 2.90 s | 442 MB | 100% |
+| | hexapdf | 727 ms | **28 MB** | 100% |
 
 Observations:
 
@@ -52,19 +52,22 @@ Observations:
   real-world tables (dashed rules, partial borders, misaligned cells), which
   is exactly where rpdfium's snap/join tolerances and `:text` fallback earn
   their cost and the 120-line reference would start dropping cells.
-- **rpdfium is the fastest on the heavy tier** (537 ms vs hexapdf's 759 ms and
-  pdfplumber's 2.98 s). The table/word pipeline pulls chars through a
-  geometry-only fast path that skips the FFI reads and per-char allocation the
-  cell filter never uses — which also cut peak RSS on the heavy tier from
-  ~265 MB to 119 MB. The full pipeline still handles the messy cases the
-  minimal hexapdf extractor cannot.
-- **The minimal hexapdf extractor stays remarkably light** — ~29 MB on the
-  heavy tier, a fraction of rpdfium's 119 MB, because it streams without
-  mapping the native `libpdfium` and does far less work (no tolerance passes,
-  no rectangle-fill handling, no multi-table segmentation per page). It also
-  leads on `03_complex` (83 ms). A fair comparison only on clean grids.
-- **rpdfium stays linear and robust**: ~5.5× faster than pdfplumber on the
-  heavy tier while using ~3.7× less memory.
+- **rpdfium is the fastest on the heavy tier** (493 ms vs hexapdf's 727 ms and
+  pdfplumber's 2.90 s). Two layers earn this. First, the table/word pipeline
+  pulls chars through a geometry-only fast path that skips the FFI reads and
+  per-char allocation the cell filter never uses. Second, the batch helpers
+  (`extract_tables`, `extract_text`) now **stream pages** — each page is closed
+  the moment its data is read, freeing its native handles and char caches
+  instead of retaining every visited page for the document's lifetime. Peak
+  RSS on the heavy tier fell from 119 MB to **39 MB** and no longer grows with
+  the page count.
+- **The minimal hexapdf extractor stays remarkably light** — ~28 MB on the
+  heavy tier — but rpdfium is now within ~11 MB of it (39 MB) despite mapping
+  the ~10 MB native `libpdfium` and running the full tolerance / rectangle /
+  multi-table pipeline. hexapdf still leads on `03_complex` (87 ms). A fair
+  comparison only on clean grids.
+- **rpdfium stays linear and robust**: ~5.9× faster than pdfplumber on the
+  heavy tier while using ~11× less memory.
 - `03_complex.pdf` also contains borderless tables and a prestamped form —
   neither counts toward the ground truth (recovering them needs the `:text`
   strategy or [font filtering](../extraction/filled-forms), not default

@@ -110,7 +110,7 @@ Rpdfium.render_to_pngs("example.pdf", output_dir: "out", scale: 2.0)
   label–value pairing
 - **Tagged-PDF struct tree** traversal for zero-geometry semantic extraction
 - **Page rendering** to PNG (pure-Ruby writer) or raw RGBA/BGRA/Gray bytes
-- Matches `pypdfium2` speed; **up to ~49× faster than `pdfplumber`** — see
+- Matches `pypdfium2` speed; **up to ~52× faster than `pdfplumber`** — see
   [Benchmarks](benchmarks)
 
 ## How this documentation is organized

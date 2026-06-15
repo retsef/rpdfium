@@ -100,6 +100,11 @@ ruby benchmark/run.rb 01_simple.pdf   # only specific pdfs
   reported memory the **maximum**.
 - Correctness is deterministic (same input, same ground truth), so it is
   taken from the first run.
+- rpdfium's batch helpers (`extract_text`, `extract_tables`, `render_to_pngs`)
+  **stream pages** — each page is closed as soon as its data is read, so only
+  one page is alive at a time and peak RSS stays flat in the page count rather
+  than growing with it. This is why the rpdfium memory numbers do not scale
+  with document size the way a "load everything" pipeline would.
 
 ## Layout
 

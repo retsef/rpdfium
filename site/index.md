@@ -40,14 +40,17 @@ end
 
 The Ruby ecosystem has `pdf-reader` (text only, slow on complex docs),
 `origami` (security-research focused), and `hexapdf` — a capable library that
-does extract text with character positioning, but is AGPL / commercially
-licensed and has no table-detection pipeline or page rasterization. `rpdfium`
-is an Apache-2.0 alternative that adds pdfplumber-style table extraction and
-page rendering, and binds the same battle-tested C++ engine that powers
-Chrome's PDF viewer — so it stays fast and light on large, complex documents.
+extracts text with character-level positioning and exposes the vector-path
+primitives you need to build table extraction yourself (the benchmark suite
+ships a [~120-line reference](https://github.com/retsef/rpdfium/blob/main/benchmark/examples/hexapdf_table_extraction.rb)
+that does exactly this); it is AGPL / commercially licensed. `rpdfium` is an
+Apache-2.0 alternative that ships those higher-level pipelines out of the box —
+pdfplumber-style table detection and page rendering on top of character
+metadata — binding the same battle-tested C++ engine that powers Chrome's PDF
+viewer, so it stays fast and light on large, complex documents.
 
 In practice it matches the speed of Python's `pypdfium2` on text extraction
-and is **up to ~49× faster than `pdfplumber`** while using **up to ~8× less
+and is **up to ~52× faster than `pdfplumber`** while using **up to ~13× less
 memory** on dense documents. See [Benchmarks](benchmarks) for the reproducible
 suite.
 

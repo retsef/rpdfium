@@ -56,7 +56,9 @@ module Rpdfium
 
   # Extract all the text of all pages, one string per page.
   def self.extract_text(input, password: nil)
-    open(input, password: password) { |doc| doc.map(&:text) }
+    open(input, password: password) do |doc|
+      doc.each_page_streaming.map(&:text)
+    end
   end
 
   # Extract all the tables of all pages.
@@ -69,7 +71,7 @@ module Rpdfium
   # With `keep_blank_rows: true` you get the raw output of Table#extract.
   def self.extract_tables(input, password: nil, keep_blank_rows: false, **opts)
     open(input, password: password) do |doc|
-      doc.flat_map do |page|
+      doc.each_page_streaming.flat_map do |page|
         Table::Extractor.new(page, **opts).extract.map do |rows|
           rows = rows.reject { |r| r.all? { |c| c.nil? || c.empty? } } unless keep_blank_rows
           { page: page.index, rows: rows }
@@ -82,7 +84,7 @@ module Rpdfium
   def self.render_to_pngs(input, output_dir:, scale: 2.0, password: nil)
     Dir.mkdir(output_dir) unless Dir.exist?(output_dir)
     open(input, password: password) do |doc|
-      doc.map do |page|
+      doc.each_page_streaming.map do |page|
         path = File.join(output_dir, format("page_%04d.png", page.index + 1))
         page.render_to_png(path, scale: scale)
         path
