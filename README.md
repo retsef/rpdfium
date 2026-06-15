@@ -40,9 +40,9 @@ rendering to raster — on top of character metadata, without hand-rolling them.
 that powers Chrome's PDF viewer.
 
 In practice it matches the speed of Python's `pypdfium2` on text
-extraction and is **up to ~52× faster than `pdfplumber`** while using
-**up to ~13× less memory** on dense documents. See [Performance](#performance)
-for details.
+extraction and is **up to ~80× faster than `pdfplumber`** while using
+**up to ~80× less memory** on dense documents (the 520-page academic tier).
+See [Performance](#performance) for details.
 
 ## Installing PDFium
 
@@ -480,8 +480,8 @@ The full, reproducible benchmark suite — sample PDFs, runners, ground-truth
 correctness scoring, and methodology — lives in
 [`benchmark/`](benchmark/README.md). It compares **rpdfium** against
 **pypdfium2** (the "pure PDFium speed floor"), **pdfplumber** (the reference
-pure-Python pipeline) and **hexapdf** (pure Ruby) across four synthetic PDFs
-of increasing complexity (1 → 60 pages), measuring **execution time**, **peak
+pure-Python pipeline) and **hexapdf** (pure Ruby) across five synthetic PDFs
+of increasing complexity (1 → 520 pages), measuring **execution time**, **peak
 memory (RSS)** and **correctness** (fraction of known ground-truth data
 recovered). Run it yourself:
 
@@ -492,17 +492,22 @@ gem install hexapdf                 # optional baseline + table-extraction refer
 ruby benchmark/run.rb
 ```
 
-### Synthetic suite (Apple M-series, best of 5)
+### Synthetic suite (Apple M-series, best of 3)
 
 Text extraction — rpdfium tracks pypdfium2 within noise (FFI overhead not
 measurable); pdfplumber degrades super-linearly:
 
 | PDF | rpdfium | pypdfium2 | pdfplumber | hexapdf |
 | --- | ---: | ---: | ---: | ---: |
-| 01_simple (1 pg) | 12 ms / 33 MB | 12 ms / 36 MB | 17 ms / 42 MB | 12 ms / 24 MB |
-| 02_medium (6 pg) | 13 ms / 33 MB | 14 ms / 36 MB | 99 ms / 57 MB | 19 ms / 24 MB |
-| 03_complex (16 pg) | 15 ms / 34 MB | 16 ms / 37 MB | 188 ms / 72 MB | 26 ms / 25 MB |
-| 04_heavy (60 pg) | **47 ms / 35 MB** | 50 ms / 40 MB | **2.43 s / 456 MB** | 144 ms / 27 MB |
+| 01_simple (1 pg) | 12 ms / 33 MB | 12 ms / 36 MB | 17 ms / 42 MB | 14 ms / 24 MB |
+| 02_medium (6 pg) | 14 ms / 33 MB | 14 ms / 37 MB | 101 ms / 57 MB | 19 ms / 24 MB |
+| 03_complex (16 pg) | 15 ms / 34 MB | 16 ms / 38 MB | 182 ms / 72 MB | 28 ms / 25 MB |
+| 04_heavy (60 pg) | **47 ms / 35 MB** | 50 ms / 40 MB | 2.41 s / 456 MB | 145 ms / 26 MB |
+| 05_academic (520 pg) | **706 ms / 69 MB** | 755 ms / 104 MB | **57.15 s / 5537 MB** | 2.28 s / 43 MB |
+
+On the 520-page tier rpdfium is **~81× faster than pdfplumber and uses ~80×
+less memory**, and it now beats raw pypdfium2 on both axes — `extract_text`
+streams pages (one alive at a time), while the pypdfium2 runner holds them.
 
 Table extraction (pypdfium2 has no table layer; the hexapdf column uses the
 minimal lines-based reference in
@@ -510,10 +515,18 @@ minimal lines-based reference in
 
 | PDF | rpdfium | pdfplumber | hexapdf |
 | --- | ---: | ---: | ---: |
-| 01_simple (1 pg) | 15 ms / 33 MB | 18 ms / 42 MB | 23 ms / 25 MB |
-| 02_medium (6 pg) | 40 ms / 35 MB | 111 ms / 57 MB | 55 ms / 26 MB |
-| 03_complex (16 pg) | 125 ms / 38 MB | 188 ms / 71 MB | 87 ms / 26 MB |
-| 04_heavy (60 pg) | **493 ms / 39 MB** | **2.90 s / 442 MB** | 727 ms / 28 MB |
+| 01_simple (1 pg) | 15 ms / 34 MB | 17 ms / 42 MB | 24 ms / 25 MB |
+| 02_medium (6 pg) | 38 ms / 35 MB | 111 ms / 57 MB | 54 ms / 25 MB |
+| 03_complex (16 pg) | 124 ms / 38 MB | 187 ms / 71 MB | 88 ms / 26 MB |
+| 04_heavy (60 pg) | **496 ms / 39 MB** | 3.05 s / 442 MB | 779 ms / 29 MB |
+| 05_academic (520 pg) | 15.46 s / 104 MB | 68.04 s / 5179 MB | **13.22 s / 37 MB** |
+
+rpdfium stays **~4.4× faster than pdfplumber while using ~50× less memory** on
+the academic tier. The minimal hexapdf reference edges it out on time there
+(13.22 s vs 15.46 s): at 520 pages the full pipeline's per-page cost
+(borderless `:text` attempts, rectangle / multi-table search, annotation
+parsing) dominates, while the `:lines`-only reference skips all of it — a fair
+comparison only on clean ruled grids.
 
 Correctness is **100% for every library on every tier** — these are clean
 generated grids, the easy case. Real-world tables (dashed rules, partial

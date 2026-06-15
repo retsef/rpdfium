@@ -168,6 +168,90 @@ def register_cells(manifest_key, rows)
   end
 end
 
+# --- academic-tier helpers (05_academic.pdf) --------------------------------
+# Longer running text, so two condensed columns actually fill a page.
+ACADEMIC_LOREM = ([LOREM] * 5).join(" ").freeze
+
+# Deterministic synthetic "figure" PNG (a fake bar chart over a grid). Cached
+# per seed in tmpdir; identical files are deduplicated to a single image
+# XObject by hexapdf on write, so the page count does not bloat the file.
+def academic_figure_png(seed)
+  path = File.join(Dir.tmpdir, "rpdfium_fig_#{seed}.png")
+  return path if File.exist?(path)
+
+  w = 160
+  h = 100
+  palette = ["\x1f\x4e\x8c\xFF".b, "\x8c\x1f\x3e\xFF".b, "\x2e\x8c\x4f\xFF".b]
+  rgba = String.new(capacity: w * h * 4, encoding: Encoding::ASCII_8BIT)
+  h.times do |y|
+    w.times do |x|
+      bar_h = ((x * 7 + seed * 13) % h)
+      on_grid = (y % 20).zero? || (x % 24).zero?
+      rgba << if y >= h - bar_h
+                palette[(x / 16 + seed) % palette.size]
+              elsif on_grid
+                "\xCC\xCC\xCC\xFF".b
+              else
+                "\xFF\xFF\xFF\xFF".b
+              end
+    end
+  end
+  Rpdfium::IO::PNG.write(path, w, h, rgba)
+  path
+end
+
+# Two condensed text columns (small font, negative char spacing, horizontal
+# scaling < 100% — the "condensed text / tight spacing" artifact). Lines that
+# overflow the available height are dropped (the text is intentionally over-
+# provided so both columns fill).
+def draw_two_columns(canvas, top, lines, size: 7.5, leading: 9.5,
+                     hscale: 82, cspacing: -0.2, bottom: 60)
+  gutter = 18
+  col_w = (PAGE_W - 2 * MARGIN - gutter) / 2.0
+  x = [MARGIN, MARGIN + col_w + gutter]
+  rows_per_col = ((top - bottom) / leading).floor
+  canvas.font("Helvetica", size: size)
+  canvas.character_spacing(cspacing)
+  canvas.horizontal_scaling(hscale)
+  lines.first(rows_per_col * 2).each_slice(rows_per_col).each_with_index do |chunk, col|
+    yy = top
+    chunk.each do |line|
+      canvas.text(line, at: [x[col], yy])
+      yy -= leading
+    end
+  end
+  canvas.character_spacing(0)
+  canvas.horizontal_scaling(100)
+  bottom
+end
+
+# Small footnote rule + tiny note at the page foot (academic artifact).
+def draw_footnote(canvas, text)
+  canvas.line(MARGIN, 56, MARGIN + 140, 56).stroke
+  canvas.font("Helvetica", size: 6)
+  canvas.text(text, at: [MARGIN, 46])
+end
+
+def add_link_annot(doc, page, rect, uri)
+  annot = doc.add({Type: :Annot, Subtype: :Link, Rect: rect, Border: [0, 0, 0],
+                   A: {Type: :Action, S: :URI, URI: uri}})
+  (page[:Annots] ||= []) << annot
+end
+
+def add_highlight_annot(doc, page, rect, contents)
+  x0, y0, x1, y1 = rect
+  annot = doc.add({Type: :Annot, Subtype: :Highlight, Rect: rect,
+                   QuadPoints: [x0, y1, x1, y1, x0, y0, x1, y0],
+                   C: [1.0, 0.9, 0.2], Contents: contents})
+  (page[:Annots] ||= []) << annot
+end
+
+def add_text_note_annot(doc, page, rect, contents)
+  annot = doc.add({Type: :Annot, Subtype: :Text, Rect: rect, Name: :Note,
+                   Open: false, Contents: contents})
+  (page[:Annots] ||= []) << annot
+end
+
 # ============================================================================
 # Benchmark PDFs — 4 tiers of increasing complexity
 # ============================================================================
@@ -256,6 +340,86 @@ HexaPDF::Document.new.tap do |doc|
   MANIFEST["04_heavy.pdf"]["text_sentinels"] = MANIFEST.delete("0H")["text_sentinels"]
   MANIFEST["04_heavy.pdf"]["pages"] = 60
   doc.write(File.join(PDF_DIR, "04_heavy.pdf"), optimize: true)
+end
+
+# --- 05_academic.pdf — 520 pages: a dense academic paper -------------------
+# The heaviest tier, more onerous than 04_heavy on every axis. A simulated
+# journal article whose pages cycle through five layouts, each packing a
+# different artifact:
+#   * condensed two-column body text (small font, negative char spacing,
+#     horizontal scaling < 100%) + footnotes + highlight annotations
+#   * ruled tables (counted in the ground truth) + caption + citation link
+#   * embedded figure images (PNG XObjects) + caption + margin note
+#   * very-condensed equation/derivation blocks (horizontal scaling 70%)
+#   * borderless appendix tables (NOT counted) + condensed body
+# Stresses page count, geometry clustering, font filtering, image XObjects and
+# the annotation layer all at once.
+HexaPDF::Document.new.tap do |doc|
+  pages = 520
+  sku = 90_000
+  sent = 0
+  next_sent = -> { sentinel("A", sent += 1) }
+  body = -> (reps) { wrap_text(([ACADEMIC_LOREM] * reps).join(" "), 72) }
+
+  # Title / abstract page (institution logo image + a margin review note).
+  page = doc.pages.add(:A4)
+  canvas = page.canvas
+  y = draw_heading(canvas, 800,
+                   "Composable Primitives for Robust PDF Extraction", size: 18)
+  canvas.font("Helvetica", size: 10, variant: :bold)
+  canvas.text("Azienda S.R.L. — Research Division", at: [MARGIN, y])
+  y -= 24
+  canvas.image(academic_figure_png(0), at: [MARGIN, y - 80], width: 120)
+  y -= 100
+  y = draw_heading(canvas, y, "Abstract", size: 12)
+  draw_two_columns(canvas, y, body.call(4), size: 9, leading: 12, hscale: 90)
+  add_text_note_annot(doc, page, [540, 800, 555, 820], "Review copy — do not cite.")
+
+  (1...pages).each do |pg|
+    page = doc.pages.add(:A4)
+    canvas = page.canvas
+    head_y = draw_heading(canvas, 800, "Section #{pg}", size: 12)
+
+    case (pg - 1) % 5
+    when 0 # condensed two-column body + footnote + highlight
+      lead = draw_paragraph(canvas, head_y, "#{next_sent.call}.", size: 8)
+      draw_two_columns(canvas, lead, body.call(8))
+      draw_footnote(canvas, "1. #{LOREM[0, 110]}")
+      add_highlight_annot(doc, page, [MARGIN, lead - 9, MARGIN + 130, lead + 2],
+                          "key claim")
+    when 1 # ruled table (counted) + caption + citation link
+      ty = draw_paragraph(canvas, head_y,
+                          "Table #{pg}: experimental measurements #{next_sent.call}.", size: 8)
+      rows = (1..10).map { |_| invoice_row(sku += 1) }
+      register_cells("05_academic.pdf", rows)
+      after = draw_ruled_table(canvas, ty, rows)
+      draw_two_columns(canvas, after, body.call(4))
+      add_link_annot(doc, page, [MARGIN, 70, MARGIN + 190, 84],
+                     "https://github.com/retsef/rpdfium")
+    when 2 # embedded figure + caption + condensed body + margin note
+      canvas.image(academic_figure_png(pg % 3 + 1), at: [MARGIN, head_y - 110],
+                   width: 180)
+      cap_y = head_y - 122
+      canvas.font("Helvetica", size: 8, variant: :bold)
+      canvas.text("Figure #{pg}: synthetic results #{next_sent.call}.", at: [MARGIN, cap_y])
+      draw_two_columns(canvas, cap_y - 14, body.call(5))
+      add_text_note_annot(doc, page, [540, cap_y, 555, cap_y + 15], "figure regenerated")
+    when 3 # very-condensed equation / derivation block
+      y2 = draw_paragraph(canvas, head_y, "Derivation #{next_sent.call}.", size: 8)
+      eqns = (["x_i = sum_{j=0}^{n} a_{ij} b_j + e_i"] * 6).join("  ")
+      draw_two_columns(canvas, y2, wrap_text("#{eqns} #{ACADEMIC_LOREM} #{ACADEMIC_LOREM}", 92),
+                       size: 7, leading: 8.5, hscale: 70, cspacing: -0.4)
+    when 4 # borderless appendix table (NOT counted) + condensed body
+      y2 = draw_paragraph(canvas, head_y, "Appendix listing #{next_sent.call}.", size: 8)
+      rows = (1..12).map { |_| invoice_row(sku += 1) }
+      after = draw_borderless_table(canvas, y2, rows)
+      draw_two_columns(canvas, after, body.call(4))
+    end
+  end
+
+  MANIFEST["05_academic.pdf"]["text_sentinels"] = MANIFEST.delete("0A")["text_sentinels"]
+  MANIFEST["05_academic.pdf"]["pages"] = pages
+  doc.write(File.join(PDF_DIR, "05_academic.pdf"), optimize: true)
 end
 
 MANIFEST.each_value { |v| v["table_cells"].uniq!; v["text_sentinels"].uniq! }

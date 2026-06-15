@@ -25,25 +25,28 @@ hexapdf row below uses it. It is a proof of concept — `:lines` only, a single
 snap epsilon, no `:text` fallback or join tolerances — not a peer of
 rpdfium's full pdfplumber port.
 
-Apple M-series (arm64, macOS), best of 5 runs after a warm-up. Reproduce
+Apple M-series (arm64, macOS), best of 3 runs after a warm-up. Reproduce
 with `ruby benchmark/run.rb`.
 
 ## Synthetic suite
 
 | PDF | Library | Time | Peak RSS | Correctness |
 | --- | --- | ---: | ---: | ---: |
-| `01_simple.pdf` (1 pg, 1 table) | rpdfium | **15 ms** | 33 MB | 100% |
-| | pdfplumber | 18 ms | 42 MB | 100% |
-| | hexapdf | 23 ms | 25 MB | 100% |
-| `02_medium.pdf` (6 pg, 6 tables) | rpdfium | **40 ms** | 35 MB | 100% |
+| `01_simple.pdf` (1 pg, 1 table) | rpdfium | **15 ms** | 34 MB | 100% |
+| | pdfplumber | 17 ms | 42 MB | 100% |
+| | hexapdf | 24 ms | 25 MB | 100% |
+| `02_medium.pdf` (6 pg, 6 tables) | rpdfium | **38 ms** | 35 MB | 100% |
 | | pdfplumber | 111 ms | 57 MB | 100% |
-| | hexapdf | 55 ms | 26 MB | 100% |
-| `03_complex.pdf` (16 pg, mixed) | rpdfium | 125 ms | 38 MB | 100% |
-| | pdfplumber | 188 ms | 71 MB | 100% |
-| | hexapdf | **87 ms** | 26 MB | 100% |
-| `04_heavy.pdf` (60 pg, 60 tables) | rpdfium | **493 ms** | 39 MB | 100% |
-| | pdfplumber | 2.90 s | 442 MB | 100% |
-| | hexapdf | 727 ms | **28 MB** | 100% |
+| | hexapdf | 54 ms | 25 MB | 100% |
+| `03_complex.pdf` (16 pg, mixed) | rpdfium | 124 ms | 38 MB | 100% |
+| | pdfplumber | 187 ms | 71 MB | 100% |
+| | hexapdf | **88 ms** | 26 MB | 100% |
+| `04_heavy.pdf` (60 pg, 60 tables) | rpdfium | **496 ms** | 39 MB | 100% |
+| | pdfplumber | 3.05 s | 442 MB | 100% |
+| | hexapdf | 779 ms | **29 MB** | 100% |
+| `05_academic.pdf` (520 pg, ~104 ruled tables) | rpdfium | 15.46 s | 104 MB | 100% |
+| | pdfplumber | 68.04 s | 5179 MB | 100% |
+| | hexapdf | **13.22 s** | **37 MB** | 100% |
 
 Observations:
 
@@ -52,22 +55,25 @@ Observations:
   real-world tables (dashed rules, partial borders, misaligned cells), which
   is exactly where rpdfium's snap/join tolerances and `:text` fallback earn
   their cost and the 120-line reference would start dropping cells.
-- **rpdfium is the fastest on the heavy tier** (493 ms vs hexapdf's 727 ms and
-  pdfplumber's 2.90 s). Two layers earn this. First, the table/word pipeline
-  pulls chars through a geometry-only fast path that skips the FFI reads and
-  per-char allocation the cell filter never uses. Second, the batch helpers
-  (`extract_tables`, `extract_text`) now **stream pages** — each page is closed
-  the moment its data is read, freeing its native handles and char caches
-  instead of retaining every visited page for the document's lifetime. Peak
-  RSS on the heavy tier fell from 119 MB to **39 MB** and no longer grows with
-  the page count.
-- **The minimal hexapdf extractor stays remarkably light** — ~28 MB on the
-  heavy tier — but rpdfium is now within ~11 MB of it (39 MB) despite mapping
-  the ~10 MB native `libpdfium` and running the full tolerance / rectangle /
-  multi-table pipeline. hexapdf still leads on `03_complex` (87 ms). A fair
-  comparison only on clean grids.
+- **rpdfium is the fastest up to the heavy tier** (496 ms vs hexapdf's 779 ms
+  and pdfplumber's 3.05 s on `04_heavy`). Two layers earn this. First, the
+  table/word pipeline pulls chars through a geometry-only fast path that skips
+  the FFI reads and per-char allocation the cell filter never uses. Second, the
+  batch helpers (`extract_tables`, `extract_text`) now **stream pages** — each
+  page is closed the moment its data is read, freeing its native handles and
+  char caches instead of retaining every visited page for the document's
+  lifetime. Peak RSS on the heavy tier fell from 119 MB to **39 MB** and no
+  longer grows with the page count.
+- **On the 520-page academic tier the minimal hexapdf reference edges rpdfium
+  out on time** (13.22 s vs 15.46 s). At that scale the full pipeline's
+  per-page cost — borderless `:text` attempts, rectangle / multi-table search,
+  annotation parsing on figure/footnote-heavy pages — dominates, while the
+  `:lines`-only reference skips all of it. rpdfium still recovers the same
+  cells and stays **~4.4× faster than pdfplumber while using ~50× less memory**
+  (104 MB vs 5.2 GB). hexapdf also leads on `03_complex` (88 ms). A fair
+  comparison only on clean ruled grids.
 - **rpdfium stays linear and robust**: ~5.9× faster than pdfplumber on the
-  heavy tier while using ~11× less memory.
+  heavy tier, ~4.4× on the academic tier, with ~11–50× less memory.
 - `03_complex.pdf` also contains borderless tables and a prestamped form —
   neither counts toward the ground truth (recovering them needs the `:text`
   strategy or [font filtering](../extraction/filled-forms), not default
