@@ -8,6 +8,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-06-16
+
+### Fixed
+
+- **`Page#words` now returns numeric `top`/`bottom` coordinates.** Each word's
+  `:top` and `:bottom` fields were computed with `chars.min { |c| c[:top] }` /
+  `chars.max { |c| c[:bottom] }`. The block form of `Enumerable#min`/`max` must
+  return a comparator (-1/0/1) and receives two arguments, so the numeric value
+  returned by the single-argument block was used as a broken comparator and the
+  method returned the whole char hash instead of the position. As a result
+  `word[:top]` and `word[:bottom]` were no longer positional numbers. Fixed by
+  using `chars.map { |c| c[:top] }.min` / `.max`, which return the expected
+  scalar.
+
 ## [0.4.2] - 2026-06-15
 
 ### Added
