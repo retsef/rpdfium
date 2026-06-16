@@ -1599,8 +1599,8 @@ module Rpdfium
         text: chars.map { |c| c[:char] }.join,
         x0: chars.first[:x0],
         x1: chars.last[:x1],
-        top: chars.min { |c| c[:top] },
-        bottom: chars.max { |c| c[:bottom] },
+        top: chars.map { |c| c[:top] }.min,
+        bottom: chars.map { |c| c[:bottom] }.max,
         fontsize: chars.first[:fontsize],
         font: chars.first[:font],
         chars: chars
