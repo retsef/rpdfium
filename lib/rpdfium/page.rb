@@ -876,13 +876,20 @@ module Rpdfium
       cs = chars(**char_opts)
       return [] if cs.empty?
 
-      # Group into rows by y
-      rows = group_consecutive(cs.sort_by { |c| [c[:top], c[:x0]] }) do |a, b|
+      # Group into rows by y. Comparator sort instead of sort_by avoids one
+      # 2-element key array per char (plus the Schwartzian pair array) — the
+      # dominant transient allocation on pages with thousands of chars.
+      sorted_cs = cs.sort do |a, b|
+        c = a[:top] <=> b[:top]
+        c.zero? ? a[:x0] <=> b[:x0] : c
+      end
+      rows = group_consecutive(sorted_cs) do |a, b|
         (a[:top] - b[:top]).abs <= y_tolerance
       end
 
       rows.flat_map do |row|
-        sorted = row.sort_by { |c| c[:x0] }
+        # In-place: `row` is a fresh group array, no need for a new copy.
+        sorted = row.sort! { |a, b| a[:x0] <=> b[:x0] }
         # Split on gap > x_tolerance or explicit space
         word_groups = []
         buf = []
@@ -1595,14 +1602,27 @@ module Rpdfium
     end
 
     def word_from_chars(chars)
+      # Single pass: fold text/top/bottom together instead of 3 separate
+      # map+join/min/max passes (each allocating an intermediate array).
+      first = chars.first
+      text = +''
+      top = first[:top]
+      bottom = first[:bottom]
+      chars.each do |c|
+        text << c[:char].to_s
+        t = c[:top]
+        b = c[:bottom]
+        top = t if t < top
+        bottom = b if b > bottom
+      end
       {
-        text: chars.map { |c| c[:char] }.join,
-        x0: chars.first[:x0],
+        text: text,
+        x0: first[:x0],
         x1: chars.last[:x1],
-        top: chars.map { |c| c[:top] }.min,
-        bottom: chars.map { |c| c[:bottom] }.max,
-        fontsize: chars.first[:fontsize],
-        font: chars.first[:font],
+        top: top,
+        bottom: bottom,
+        fontsize: first[:fontsize],
+        font: first[:font],
         chars: chars
       }
     end
