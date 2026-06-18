@@ -8,6 +8,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-06-18
+
+### Changed
+
+- **`Page#words` allocates ~77% fewer objects.** The row/word pipeline was
+  rebuilt to avoid transient allocations: the by-row sort now uses a
+  comparator block instead of `sort_by { [top, x0] }` (no per-char 2-element
+  key array nor Schwartzian pair array), the per-row sort runs in place with
+  `sort!`, and `word_from_chars` folds `text`/`top`/`bottom` in a single pass
+  instead of three separate `map`+`join`/`min`/`max` passes (each of which
+  allocated an intermediate array). Measured on a real 3567-char page (438
+  words): 6552 → 1534 allocated objects per call (1.84 → 0.43 objects/char).
+  Behavior is unchanged.
+
 ## [0.4.3] - 2026-06-16
 
 ### Fixed
